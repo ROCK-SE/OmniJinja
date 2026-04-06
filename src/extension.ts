@@ -1,8 +1,5 @@
 /**
- * OmniJinja VS Code Extension - Main Entry Point
- * ----------------------------------------------
- * Copyright (c) 2024 YuSun. All rights reserved.
- * Licensed under the MIT License.
+ * OmniJinja VS Code Extension 
  *
  * This module orchestrates the frontend language server features for Jinja2 templates.
  * It acts as the bridge between VS Code's Extension API and the Python-based OmniJinja 
@@ -147,7 +144,7 @@ export class OmniJinjaFixer implements vscode.CodeActionProvider {
 // ==========================================
 
 export async function activate(context: vscode.ExtensionContext) {
-    console.log('🚀 OmniJinja Pro activated successfully!');
+    console.log('🚀 OmniJinja activated successfully!');
 
     diagnosticCollection = vscode.languages.createDiagnosticCollection('omnijinja');
     context.subscriptions.push(diagnosticCollection);
@@ -167,11 +164,12 @@ export async function activate(context: vscode.ExtensionContext) {
         )
     );
 
-    // Initial workspace scan: Find and queue all relevant Python files
+    // Initial workspace scan: Find and queue all relevant Python files and Jinja templates
     vscode.window.withProgress({
         location: vscode.ProgressLocation.Window,
         title: "OmniJinja: Initializing Workspace...",
     }, async (progress) => {
+        // Process Python files
         const pyFiles = await vscode.workspace.findFiles('**/*.py', '**/{node_modules,.venv,venv}/**');
         const filesToParse = pyFiles.filter(uri => {
             const content = fs.readFileSync(uri.fsPath, 'utf-8');
@@ -180,6 +178,20 @@ export async function activate(context: vscode.ExtensionContext) {
         });
         for (const file of filesToParse) parseQueue.push(file.fsPath);
         await processQueue(pythonEnginePath, workspaceRoot);
+
+        // Process Jinja template files (html, jinja, j2, and other template extensions)
+        const templatePatterns = ['**/*.html', '**/*.jinja', '**/*.j2', '**/*.jinja2'];
+        const excludePattern = '**/{node_modules,.venv,venv}/**';
+        
+        for (const pattern of templatePatterns) {
+            const templateFiles = await vscode.workspace.findFiles(pattern, excludePattern);
+            for (const file of templateFiles) {
+                if (!jinjaParseQueue.includes(file.fsPath)) {
+                    jinjaParseQueue.push(file.fsPath);
+                }
+            }
+        }
+        await processJinjaQueue(pythonEnginePath, workspaceRoot);
     });
 
     // File Save Listeners for Background Reprocessing
