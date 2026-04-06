@@ -1,0 +1,104 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Jinja",
+  "scopeName": "text.html.jinja",
+  "injectionSelector": "L:text.html.basic, L:text.html.derivative, L:meta.tag.any.html",
+  "patterns": [
+    {
+      "include": "#jinja-comment"
+    },
+    {
+      "include": "#jinja-statement"
+    },
+    {
+      "include": "#jinja-expression"
+    }
+  ],
+  "repository": {
+    "jinja-comment": {
+      "begin": "\\{#-?",
+      "end": "-?#\\}",
+      "name": "comment.block",
+      "beginCaptures": { "0": { "name": "punctuation" } },
+      "endCaptures": { "0": { "name": "punctuation" } }
+    },
+    "jinja-statement": {
+      "begin": "(\\{%)(-?)",
+      "end": "(-?)(%)\\}",
+      "name": "meta.tag.template.jinja",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.embedded.begin" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.section.embedded.end" }
+      },
+      "patterns": [
+        { "include": "#expression-core" }
+      ]
+    },
+    "jinja-expression": {
+      "begin": "\\{\\{-?",
+      "end": "-?\\}\\}",
+      "name": "meta.interpolation.jinja",
+      "beginCaptures": { "0": { "name": "punctuation" } },
+      "endCaptures": { "0": { "name": "punctuation" } },
+      "patterns": [
+        { "include": "#expression-core" }
+      ]
+    },
+    "expression-core": {
+      "patterns": [
+        {
+          "match": "\\b(if|else|elif|endif|for|in|endfor|set|block|endblock|extends|include|macro|endmacro|call|endcall|with|endwith|raw|endraw|filter|endfilter|import|from)\\b",
+          "name": "keyword.control"
+        },
+        {
+          "match": "\\b(and|or|not|is)\\b",
+          "name": "keyword.operator"
+        },
+        {
+          "match": "\\b(true|false|True|False|none|None)\\b",
+          "name": "constant.language"
+        },
+        {
+          "match": "\\b(loop|super|range|dict|lipsum)\\b",
+          "name": "support.function"
+        },
+        {
+          "match": "(\\|)\\s*([a-zA-Z0-9_]+)",
+          "captures": {
+            "1": { "name": "keyword.operator" },
+            "2": { "name": "support.function" }
+          }
+        },
+        {
+          "match": "(is)\\s+(defined|undefined|none|string|number|iterable|mapping|even|odd)",
+          "captures": {
+            "1": { "name": "keyword.operator" },
+            "2": { "name": "support.type" }
+          }
+        },
+        {
+          "begin": "\"",
+          "end": "\"",
+          "name": "string.quoted.double",
+          "patterns": [{ "match": "\\\\.", "name": "constant.character.escape" }]
+        },
+        {
+          "begin": "'",
+          "end": "'",
+          "name": "string.quoted.single",
+          "patterns": [{ "match": "\\\\.", "name": "constant.character.escape" }]
+        },
+        {
+          "match": "\\b\\d+(\\.\\d+)?\\b",
+          "name": "constant.numeric"
+        },
+        {
+          "match": "\\+|\\-|\\*|/|%|~|==|!=|>|<|>=|<=",
+          "name": "keyword.operator"
+        }
+      ]
+    }
+  }
+}

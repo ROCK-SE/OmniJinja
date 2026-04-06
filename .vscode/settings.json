@@ -1,0 +1,18 @@
+{
+	"python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+	"python.linting.enabled": true,
+	"python.linting.pylintEnabled": false,
+	"[python]": {
+		"editor.defaultFormatter": "ms-python.python",
+		"editor.formatOnSave": true
+	},
+	"[typescript]": {
+		"editor.defaultFormatter": "esbenp.prettier-vscode",
+		"editor.formatOnSave": true
+	},
+	"files.exclude": {
+		"**/__pycache__": true,
+		"**/node_modules": true,
+		"**/.pytest_cache": true
+	}
+}
