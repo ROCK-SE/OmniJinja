@@ -45,7 +45,7 @@ def main():
     1. Setup directories and load merged backend context.
     2. Extract metadata (inheritance blocks, macros, internal symbols).
     3. Perform semantic checks (undefined variables -> Warnings).
-    4. Perform structural checks (syntax rules -> Errors) and calculate repairs.
+    4. Perform structural checks (syntax rules -> Errors/Warnings) and calculate repairs.
     5. Export consolidated results to a JSON file.
     """
     if len(sys.argv) < 3:
@@ -80,19 +80,39 @@ def main():
     diagnostics = linter.lint(template_code)
 
     # Syntax Errors - Errors + Fixes
-    syntax_errors = analyze_template(template_code)
+    # Syntax Errors - Errors + Fixes
+    # Syntax Errors - Errors + Fixes
+    all_syntax_issues = analyze_template(template_code)
     fixed_code = None
     
-    if syntax_errors:
-        fixed_code = fix_template(template_code, syntax_errors)
+    if all_syntax_issues:
+
+        fixable_errors = [err for err in all_syntax_issues if "Rule 5" not in err.rule]
         
-        for err in syntax_errors:
+        if fixable_errors:
+            try:
+                fixed_code = fix_template(template_code, fixable_errors)
+            except Exception:
+                pass 
+        
+        for err in all_syntax_issues:
+            is_warning = "Rule 5" in err.rule
+            severity_level = "warning" if is_warning else "error"
+            
+            icon = "⚠️" if is_warning else "🚨"
+       
+            formatted_message = (
+                f"{icon} [{err.rule}]\n\n"
+                f"🔍 Reason:\n{err.description}\n\n"
+                f"💡 Advice:\n{err.suggestion}"
+            )
+            
             diagnostics.append({
                 "line": err.line,
                 "col": err.col, 
-                "message": f"[{err.rule}]\nReason: {err.description}\nAdvice: {err.suggestion}",
+                "message": formatted_message, 
                 "original": err.original,
-                "severity": "error" 
+                "severity": severity_level    
             })
 
     result = {

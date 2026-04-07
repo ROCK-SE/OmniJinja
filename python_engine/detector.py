@@ -324,7 +324,7 @@ def check_property_access(lines: List[str]) -> List[SyntaxError]:
 
 def check_extends_position(lines: List[str]) -> List[SyntaxError]:
     """
-    Check if extends tag is at the first valid position.
+    Check if extends tag is at the absolute first valid position.
     """
     errors = []
     extends_pattern = r'\{%\s*extends\s+(.+?)\s*%\}'
@@ -349,12 +349,12 @@ def check_extends_position(lines: List[str]) -> List[SyntaxError]:
             if first_valid_line_num != first_extends_line_num:
                 col = line.find('{% extends') + 1 if '{% extends' in line else 1
                 errors.append(SyntaxError(
-                    rule="Rule 4: Incorrect extends tag position",
+                    rule="Rule 4: extends tag must be the absolute first item",
                     line=first_extends_line_num,
                     col=col,
-                    description=f"extends tag must be the first valid statement in the template.",
+                    description="HTML comments () are treated as plain text output by Jinja. Outputting text before 'extends' will crash the Python runtime.",
                     original=first_extends_stripped,
-                    suggestion="Move extends tag to the beginning"
+                    suggestion="Use Jinja's native comment {# this is a comment #} instead."
                 ))
         
         if len(extends_lines) > 1:
@@ -372,6 +372,43 @@ def check_extends_position(lines: List[str]) -> List[SyntaxError]:
     return errors
 
 
+def check_html_comments(template: str) -> List[SyntaxError]:
+    """
+    Detect dangerous Jinja syntax embedded within HTML comments.
+    """
+    errors = []
+   
+    html_comment_pattern = re.compile(r'', re.DOTALL)
+    
+    for match in html_comment_pattern.finditer(template):
+        
+        content = match.group(0) 
+        
+        if '{%' in content or '{{' in content:
+            start_idx = match.start()
+            text_before = template[:start_idx]
+            line = text_before.count('\n') + 1
+            col = start_idx - text_before.rfind('\n') if '\n' in text_before else start_idx + 1
+            
+            err = SyntaxError(
+                rule="Rule 5: The HTML Comment Trap",
+                line=line,
+                col=col,
+                description="Dangerous Jinja execution inside HTML comment.\nReason: Jinja does not recognize HTML comments. The logic inside will still be executed on the server, which may impact performance or cause unexpected crashes.",
+                original=match.group(0),
+                suggestion="If you want to disable this Jinja code, wrap it in {# ... #} instead."
+            )
+           
+            try:
+                err.severity = "warning"
+            except AttributeError:
+                pass
+                
+            errors.append(err)
+            
+    return errors
+
+
 def analyze_template(template: str) -> List[SyntaxError]:
     """
     Execute all rule checks.
@@ -384,6 +421,7 @@ def analyze_template(template: str) -> List[SyntaxError]:
     errors.extend(check_tag_logic_pairing(lines))
     errors.extend(check_property_access(lines))
     errors.extend(check_extends_position(lines))
+    errors.extend(check_html_comments(template))
     
     return errors
 

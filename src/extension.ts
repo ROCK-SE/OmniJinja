@@ -859,7 +859,8 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string) 
                 let colNum = 0;
                 let length = 1000; 
                 
-                if (diag.severity === 'error' && diag.col) {
+                // CHANGED: Removed the 'error' check so warnings also receive precise positional calculation
+                if (diag.col) {
                     colNum = Math.max(0, diag.col - 1);
                     length = diag.original ? String(diag.original).length : 5;
                 }
