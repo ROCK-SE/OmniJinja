@@ -396,7 +396,7 @@ def check_html_comments(template: str) -> List[SyntaxError]:
             col = start_idx - text_before.rfind('\n') if '\n' in text_before else start_idx + 1
             
             err = SyntaxError(
-                rule="Rule 5: The HTML Comment Trap",
+                rule="Rule 5: Dangerous Jinja execution inside HTML comment",
                 line=line,
                 col=col,
                 description="Jinja does not recognize HTML comments. The logic inside will still be executed on the server, which may impact performance or cause unexpected crashes.",
