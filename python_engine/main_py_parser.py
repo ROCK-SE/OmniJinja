@@ -32,21 +32,12 @@ def main():
     target_py_file = sys.argv[1]
     workspace_root = sys.argv[2]
 
-    if not os.path.exists(target_py_file):
-        print(f"File not found: {target_py_file}")
-        sys.exit(1)
-
-    try:
-        with open(target_py_file, 'r', encoding='utf-8') as f:
-            source_code = f.read()
-    except Exception as e:
-        print(f"Failed to read file: {e}")
-        sys.exit(1)
+    # Read the live source code directly from standard input memory stream
+    source_code = sys.stdin.read()
 
     if not has_flask_or_jinja_import(source_code):
         print(f"Skipped: {os.path.basename(target_py_file)} does not import flask/jinja2.")
         sys.exit(0)
-
    
     try:
         ast_tree = ast.parse(source_code)

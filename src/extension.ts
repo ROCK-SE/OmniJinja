@@ -194,8 +194,9 @@ export async function activate(context: vscode.ExtensionContext) {
         await processJinjaQueue(pythonEnginePath, workspaceRoot);
     });
 
-    // File Save Listeners for Background Reprocessing
-    const pySaveListener = vscode.workspace.onDidSaveTextDocument((document) => {
+    // Real-time File Change Listeners for Instant Reprocessing
+    const pyChangeListener = vscode.workspace.onDidChangeTextDocument((event) => {
+        const document = event.document;
         if (document.languageId === 'python') {
             const filePath = document.uri.fsPath;
             if (debounceTimers.has(filePath)) clearTimeout(debounceTimers.get(filePath)!);
@@ -205,11 +206,12 @@ export async function activate(context: vscode.ExtensionContext) {
                     processQueue(pythonEnginePath, workspaceRoot);
                 }
                 debounceTimers.delete(filePath);
-            }, 500));
+            }, 300));
         }
     });
 
-    const htmlSaveListener = vscode.workspace.onDidSaveTextDocument((document) => {
+    const htmlChangeListener = vscode.workspace.onDidChangeTextDocument((event) => {
+        const document = event.document;
         const validLangs = ['html', 'jinja', 'django-html', 'jinja-html'];
         if (validLangs.includes(document.languageId) || document.fileName.endsWith('.html')) {
             const filePath = document.uri.fsPath;
@@ -220,7 +222,7 @@ export async function activate(context: vscode.ExtensionContext) {
                     processJinjaQueue(pythonEnginePath, workspaceRoot);
                 }
                 debounceTimers.delete(filePath);
-            }, 500));
+            }, 300));
         }
     });
 
@@ -727,8 +729,8 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
-        pySaveListener, 
-        htmlSaveListener, 
+        pyChangeListener, 
+        htmlChangeListener, 
         watcher, 
         htmlWatcher,
         completionProvider, 
@@ -755,12 +757,19 @@ async function processQueue(enginePath: string, workspaceRoot: string) {
         const scriptPath = path.join(enginePath, 'main_py_parser.py');
         const command = `python "${scriptPath}" "${filePath}" "${workspaceRoot}"`;
 
+        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
+        const content = doc ? doc.getText() : fs.readFileSync(filePath, 'utf-8');
+
         try {
             await new Promise((resolve, reject) => {
-                exec(command, (error, stdout) => {
+                const child = exec(command, (error, stdout) => {
                     if (error) reject(error);
                     else resolve(stdout);
                 });
+                if (child.stdin) {
+                    child.stdin.write(content);
+                    child.stdin.end();
+                }
             });
             loadSchemaIntoMemory(filePath, workspaceRoot);
         } catch (e) {
@@ -782,12 +791,19 @@ async function processJinjaQueue(enginePath: string, workspaceRoot: string) {
         const scriptPath = path.join(enginePath, 'main_jinja_parser.py');
         const command = `python "${scriptPath}" "${filePath}" "${workspaceRoot}"`;
 
+        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
+        const content = doc ? doc.getText() : fs.readFileSync(filePath, 'utf-8');
+
         try {
             await new Promise((resolve, reject) => {
-                exec(command, (error, stdout) => {
+                const child = exec(command, (error, stdout) => {
                     if (error) reject(error);
                     else resolve(stdout);
                 });
+                if (child.stdin) {
+                    child.stdin.write(content);
+                    child.stdin.end();
+                }
             });
             loadJinjaSchemaIntoMemory(filePath, workspaceRoot);
         } catch (e) {

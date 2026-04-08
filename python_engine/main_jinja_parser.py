@@ -49,7 +49,7 @@ def main():
     5. Export consolidated results to a JSON file.
     """
     if len(sys.argv) < 3:
-        print("Usage: python jinja_main_parser.py <template_path> <workspace_root>")
+        print("Usage: python main_jinja_parser.py <template_path> <workspace_root>")
         return
 
     template_path = sys.argv[1]
@@ -59,8 +59,8 @@ def main():
     
     backend_schema = get_merged_backend_schema(output_schemas_dir)
     
-    with open(template_path, 'r', encoding='utf-8') as f:
-        template_code = f.read()
+    # Read the live template code directly from standard input memory stream
+    template_code = sys.stdin.read()
         
     template_dir = os.path.dirname(template_path)
 
@@ -79,8 +79,6 @@ def main():
     linter = JinjaUndefinedLinter(backend_schema)
     diagnostics = linter.lint(template_code)
 
-    # Syntax Errors - Errors + Fixes
-    # Syntax Errors - Errors + Fixes
     # Syntax Errors - Errors + Fixes
     all_syntax_issues = analyze_template(template_code)
     fixed_code = None
