@@ -342,9 +342,30 @@ export async function activate(context: vscode.ExtensionContext) {
                     if (pySourcesMap) {
                         for (const ctx of pySourcesMap.values()) Object.assign(mergedContext, ctx); 
                     }
-                    // Merge local contexts (macros, set, for-loops)
+                    
+                    // Merge local contexts (macros, set, for-loops) with SPATIAL SCOPE logic
                     const internalCtx = internalJinjaRegistry.get(currentHtmlName);
-                    if (internalCtx) Object.assign(mergedContext, internalCtx);
+                    if (internalCtx) {
+                        // Load newly formatted globals
+                        if (internalCtx.globals) Object.assign(mergedContext, internalCtx.globals);
+                        
+                        // Load scoped variables only if active line falls within their scope_range
+                        if (internalCtx.scoped) {
+                            const activeLine = position.line + 1; // Translate VSCode 0-index to AST 1-index
+                            for (const scope of internalCtx.scoped) {
+                                if (activeLine >= scope.scope_range.start_line && activeLine <= scope.scope_range.end_line) {
+                                    Object.assign(mergedContext, scope.vars);
+                                }
+                            }
+                        }
+                        
+                        // Fallback fallback loop to keep compatibility with flat items (e.g. macros)
+                        for (const key in internalCtx) {
+                            if (key !== 'globals' && key !== 'scoped') {
+                                mergedContext[key] = internalCtx[key];
+                            }
+                        }
+                    }
 
                     // Handle Nested Property Access (e.g., user.profile.)
                     const propMatch = jinjaText.match(/([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\.([a-zA-Z0-9_]*)$/);
@@ -491,8 +512,25 @@ export async function activate(context: vscode.ExtensionContext) {
                 if (pySourcesMap) {
                     for (const ctx of pySourcesMap.values()) Object.assign(mergedContext, ctx);
                 }
+                
+                // Merge local contexts (macros, set, for-loops) with SPATIAL SCOPE logic
                 const internalCtx = internalJinjaRegistry.get(currentHtmlName);
-                if (internalCtx) Object.assign(mergedContext, internalCtx);
+                if (internalCtx) {
+                    if (internalCtx.globals) Object.assign(mergedContext, internalCtx.globals);
+                    if (internalCtx.scoped) {
+                        const activeLine = position.line + 1;
+                        for (const scope of internalCtx.scoped) {
+                            if (activeLine >= scope.scope_range.start_line && activeLine <= scope.scope_range.end_line) {
+                                Object.assign(mergedContext, scope.vars);
+                            }
+                        }
+                    }
+                    for (const key in internalCtx) {
+                        if (key !== 'globals' && key !== 'scoped') {
+                            mergedContext[key] = internalCtx[key];
+                        }
+                    }
+                }
 
                 let foundValue: any = undefined;
                 
@@ -593,8 +631,25 @@ export async function activate(context: vscode.ExtensionContext) {
                     if (pySourcesMap) {
                         for (const ctx of pySourcesMap.values()) Object.assign(mergedContext, ctx);
                     }
+                    
+                    // Merge local contexts (macros, set, for-loops) with SPATIAL SCOPE logic
                     const internalCtx = internalJinjaRegistry.get(currentHtmlName);
-                    if (internalCtx) Object.assign(mergedContext, internalCtx);
+                    if (internalCtx) {
+                        if (internalCtx.globals) Object.assign(mergedContext, internalCtx.globals);
+                        if (internalCtx.scoped) {
+                            const activeLine = position.line + 1;
+                            for (const scope of internalCtx.scoped) {
+                                if (activeLine >= scope.scope_range.start_line && activeLine <= scope.scope_range.end_line) {
+                                    Object.assign(mergedContext, scope.vars);
+                                }
+                            }
+                        }
+                        for (const key in internalCtx) {
+                            if (key !== 'globals' && key !== 'scoped') {
+                                mergedContext[key] = internalCtx[key];
+                            }
+                        }
+                    }
 
                     let currentLevel = mergedContext;
                     for (const part of parts) {

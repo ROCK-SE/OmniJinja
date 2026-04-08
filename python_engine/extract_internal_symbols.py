@@ -13,6 +13,12 @@ from jinja2.visitor import NodeVisitor
 class JinjaSymbolExtractor(NodeVisitor):
     def __init__(self, backend_schema: dict):
         self.backend_schema = backend_schema or {}
+        
+        # Store both global variables and spatial scoped variables
+        self.extracted_data = {
+            "globals": {},  
+            "scoped": []    
+        }
         self.scope_stack = [{}]  # Use scope stack instead of flat dict
         
         self.LOOP_PROPERTIES = {
@@ -65,16 +71,27 @@ class JinjaSymbolExtractor(NodeVisitor):
             
         return current if isinstance(current, dict) else {"__type__": type(current).__name__.capitalize()}
 
+    def _get_block_end_line(self, node: nodes.Node) -> int:
+        """Approximates the end line of an AST block by finding the maximum line number among its children."""
+        max_line = node.lineno
+        for child in node.find_all(nodes.Node):
+            if hasattr(child, 'lineno') and child.lineno > max_line:
+                max_line = child.lineno
+        return max_line + 1
+
     def visit_Assign(self, node: nodes.Assign):
         self.visit(node.node)
         if isinstance(node.target, nodes.Name):
             if isinstance(node.node, nodes.Const):
-                self.scope_stack[-1][node.target.name] = {"__type__": type(node.node.value).__name__.capitalize()}
+                schema = {"__type__": type(node.node.value).__name__.capitalize()}
             else:
                 path = self._extract_path(node.node)
-                self.scope_stack[-1][node.target.name] = self._resolve_schema(path)
+                schema = self._resolve_schema(path)
+            
+            # Save to globals map
+            self.extracted_data["globals"][node.target.name] = schema
+            self.scope_stack[0][node.target.name] = schema
 
-    
     # {% for item in avatars %}
     #     {{item.age}}
     # {% endfor %} 
@@ -90,6 +107,17 @@ class JinjaSymbolExtractor(NodeVisitor):
         if isinstance(node.target, nodes.Name):
             local_scope[node.target.name] = iter_type_data if iter_type_data else {"__type__": "Any"}
             
+        # Calculate spatial scope range (start and end line)
+        start_line = node.lineno
+        end_line = self._get_block_end_line(node)
+        
+        # Save spatial scope data
+        self.extracted_data["scoped"].append({
+            "type": "for",
+            "scope_range": {"start_line": start_line, "end_line": end_line},
+            "vars": local_scope
+        })
+            
         self.scope_stack.append(local_scope)
         for child in node.body: 
             self.visit(child)
@@ -104,25 +132,36 @@ class JinjaSymbolExtractor(NodeVisitor):
         set_pattern = re.compile(r'\{%\s*set\s+([a-zA-Z0-9_]+)\s*=\s*([a-zA-Z0-9_.]+)')
         for match in set_pattern.finditer(template_code):
             var_name, path_str = match.groups()
-            self.scope_stack[-1][var_name] = self._resolve_schema(path_str.split('.'))
+            schema = self._resolve_schema(path_str.split('.'))
+            self.extracted_data["globals"][var_name] = schema
+            self.scope_stack[0][var_name] = schema
             
         for_pattern = re.compile(r'\{%\s*for\s+([a-zA-Z0-9_]+)\s+in\s+([a-zA-Z0-9_.]+)')
         for match in for_pattern.finditer(template_code):
             var_name, path_str = match.groups()
             iter_data = self._resolve_schema(path_str.split('.'), is_iterable=True)
-            # Note: For loop variables in regex fallback are added to current scope
-            # They would be properly scoped in the AST visitor
-            self.scope_stack[-1][var_name] = iter_data if iter_data else {"__type__": "Any"}
-            self.scope_stack[-1]["loop"] = self.LOOP_PROPERTIES
+            
+            # Calculate approx start line for fallback
+            start_line = template_code[:match.start()].count('\n') + 1
+            
+            scoped_vars = {
+                var_name: iter_data if iter_data else {"__type__": "Any"},
+                "loop": self.LOOP_PROPERTIES
+            }
+            
+            # Without closing tag, assume scope ends at EOF (999999)
+            self.extracted_data["scoped"].append({
+                "type": "for_fallback",
+                "scope_range": {"start_line": start_line, "end_line": 999999},
+                "vars": scoped_vars
+            })
 
     def extract(self, template_code: str) -> dict:
         try:
             ast_tree = Environment().parse(template_code)
             self.visit(ast_tree)
         except Exception:
-            
             self._regex_fallback(template_code)
             
-        # Return only the global scope (scope_stack[0]) which contains variables 
-        # valid outside of any loops or macros
-        return self.scope_stack[0]
+        # Return the new structured dict containing globals and spatial scopes
+        return self.extracted_data
