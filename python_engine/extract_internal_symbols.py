@@ -88,7 +88,8 @@ class JinjaSymbolExtractor(NodeVisitor):
                 path = self._extract_path(node.node)
                 schema = self._resolve_schema(path)
             
-            # Save to globals map
+            schema["def_line"] = node.lineno 
+            
             self.extracted_data["globals"][node.target.name] = schema
             self.scope_stack[0][node.target.name] = schema
 
@@ -133,6 +134,10 @@ class JinjaSymbolExtractor(NodeVisitor):
         for match in set_pattern.finditer(template_code):
             var_name, path_str = match.groups()
             schema = self._resolve_schema(path_str.split('.'))
+            
+            start_line = template_code[:match.start()].count('\n') + 1
+            schema["def_line"] = start_line
+            
             self.extracted_data["globals"][var_name] = schema
             self.scope_stack[0][var_name] = schema
             
