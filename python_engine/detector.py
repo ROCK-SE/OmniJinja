@@ -377,15 +377,20 @@ def check_html_comments(template: str) -> List[SyntaxError]:
     Detect dangerous Jinja syntax embedded within HTML comments.
     """
     errors = []
-   
-    html_comment_pattern = re.compile(r'', re.DOTALL)
+    
+    html_comment_pattern = re.compile(r'<!--.*?-->', re.DOTALL)
+    
+    jinja_pattern = re.compile(r'(\{\{.*?\}\}|\{%.*?%\})', re.DOTALL)
     
     for match in html_comment_pattern.finditer(template):
-        
         content = match.group(0) 
         
-        if '{%' in content or '{{' in content:
-            start_idx = match.start()
+        jinja_matches = jinja_pattern.finditer(content)
+        
+        for j_match in jinja_matches:
+            jinja_code = j_match.group(1) 
+            
+            start_idx = match.start() + j_match.start()
             text_before = template[:start_idx]
             line = text_before.count('\n') + 1
             col = start_idx - text_before.rfind('\n') if '\n' in text_before else start_idx + 1
@@ -394,11 +399,11 @@ def check_html_comments(template: str) -> List[SyntaxError]:
                 rule="Rule 5: The HTML Comment Trap",
                 line=line,
                 col=col,
-                description="Dangerous Jinja execution inside HTML comment.\nReason: Jinja does not recognize HTML comments. The logic inside will still be executed on the server, which may impact performance or cause unexpected crashes.",
-                original=match.group(0),
+                description="Jinja does not recognize HTML comments. The logic inside will still be executed on the server, which may impact performance or cause unexpected crashes.",
+                original=jinja_code, 
                 suggestion="If you want to disable this Jinja code, wrap it in {# ... #} instead."
             )
-           
+            
             try:
                 err.severity = "warning"
             except AttributeError:
