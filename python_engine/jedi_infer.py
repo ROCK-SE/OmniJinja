@@ -170,7 +170,8 @@ class JediPropertyExtractor:
                     
             final_results.append({
                 "template": call["template"],
-                "context": enriched_context
+                "context": enriched_context,
+                "render_line": call.get("render_line")
             })
         return final_results
 

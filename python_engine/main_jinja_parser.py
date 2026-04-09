@@ -18,6 +18,7 @@ from extract_internal_symbols import JinjaSymbolExtractor
 from variable_undefined import JinjaUndefinedLinter
 from detector import analyze_template
 from fixer import fix_template
+from template_variable import extract_external_requirements
 
 def get_merged_backend_schema(output_schemas_dir):
     merged_schema = {}
@@ -73,6 +74,7 @@ def main():
     
     symbol_extractor = JinjaSymbolExtractor(backend_schema)
     internal_vars = symbol_extractor.extract(template_code)
+    external_reqs = extract_external_requirements(template_code)
     
     # 2. Diagnostic Generation
     # Undefined - Warnings
@@ -117,6 +119,7 @@ def main():
         "blocks": blocks,
         "macros": macros,
         "internal_variables": internal_vars,
+        "external_requirements": external_reqs,
         "diagnostics": diagnostics,
         "fixed_code": fixed_code 
     }
