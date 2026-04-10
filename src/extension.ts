@@ -929,7 +929,17 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string) 
 
         if (data.diagnostics && Array.isArray(data.diagnostics)) {
             const diagnostics: vscode.Diagnostic[] = [];
+            
+            // Check if this HTML template is rendered by any known Python file
+            const isLinked = templateRegistry.has(baseName) && templateRegistry.get(baseName)!.size > 0;
+
             for (const diag of data.diagnostics) {
+                // Suppress "Undefined" warnings if the template is not linked to any Python backend yet
+                const isUndefinedWarning = diag.message && diag.message.toLowerCase().includes('undefined');
+                if (!isLinked && isUndefinedWarning) {
+                    continue; // Skip pushing this diagnostic
+                }
+
                 const lineNum = Math.max(0, (diag.line || 1) - 1);
                 
                 let colNum = 0;
