@@ -79,7 +79,7 @@ class JinjaUndefinedLinter(NodeVisitor):
             # In dynamic templates, variables might be injected at runtime outside the parsed schema.
             self.diagnostics.append({
                 "line": lineno, 
-                "message": f"Undefined Warning: '{base_var}' is not defined in the current context.", 
+                "message": f"⚠️ Undefined Warning: '{base_var}' is not defined in the current context.", 
                 "severity": "warning"
             })
             return
@@ -95,7 +95,7 @@ class JinjaUndefinedLinter(NodeVisitor):
             if isinstance(current_level, list) or (isinstance(current_level, dict) and current_level.get("__is_iterable__")):
                 self.diagnostics.append({
                     "line": lineno, 
-                    "message": f"Type Warning: '{parent_path}' is an Iterable/Collection. You cannot directly access '{attr}'.", 
+                    "message": f"⚠️ Type Warning: '{parent_path}' is an Iterable/Collection. You cannot directly access '{attr}'.", 
                     "severity": "warning"
                 })
                 return
@@ -110,10 +110,80 @@ class JinjaUndefinedLinter(NodeVisitor):
                         
                     self.diagnostics.append({
                         "line": lineno, 
-                        "message": f"Property Warning: '{attr}' is not a known property of '{parent_path}'.", 
+                        "message": f"⚠️ Property Warning: '{attr}' is not a known property of '{parent_path}'.", 
                         "severity": "warning"
                     })
                     return
+
+    def _check_iterable(self, node: nodes.Node, lineno: int):
+        """
+        Validates that the given node (variable/expression) is iterable.
+        Used for checking for-loop iteration expressions.
+        
+        Args:
+            node (nodes.Node): The AST node representing the value being iterated over.
+            lineno (int): The line number where the for-loop is located.
+        """
+        # Extract the variable path being iterated over
+        path = self._extract_path(node)
+        if not path:
+            # Complex expressions like literals or operations - assume they're valid
+            return
+        
+        base_var = path[0]
+        if base_var in self.BUILTIN_GLOBALS:
+            # Built-in functions like range() are iterable
+            return
+
+        # Search for the base variable in scope
+        found_in_scope = None
+        for scope in reversed(self.scope_stack):
+            if base_var in scope:
+                found_in_scope = scope
+                break
+        
+        if found_in_scope is None:
+            # Variable is undefined, but that's already caught by _check_undefined
+            return
+
+        # Get the variable value and traverse the property path if needed
+        current_level = found_in_scope[base_var]
+        
+        for i in range(1, len(path)):
+            attr = path[i]
+            if isinstance(current_level, dict):
+                if attr in current_level:
+                    current_level = current_level[attr]
+                else:
+                    # Property doesn't exist - skip iterable check
+                    return
+            else:
+                # Can't traverse further
+                return
+        
+        # Now check if current_level is iterable
+        is_iterable = False
+        
+        if isinstance(current_level, list):
+            # Lists are iterable
+            is_iterable = True
+        elif isinstance(current_level, dict):
+            # Check __is_iterable__ marker
+            if current_level.get("__is_iterable__"):
+                is_iterable = True
+        
+        if not is_iterable:
+            # Get the variable name for the error message
+            var_name = ".".join(str(p) for p in path)
+            type_info = ""
+            if isinstance(current_level, dict) and "__type__" in current_level:
+                type_info = f" (of type {current_level['__type__']})"
+            
+            self.diagnostics.append({
+                "line": lineno, 
+                "message": f"⚠️ Type Warning: You iterate over a variable '{var_name}'{type_info} in Jinja that isn't actually an Iterable in Python.", 
+                "severity": "warning"
+            })
 
     def visit_Assign(self, node: nodes.Assign):
         """Tracks local variables created via {% set var = ... %}."""
@@ -126,7 +196,11 @@ class JinjaUndefinedLinter(NodeVisitor):
         """
         Manages scope for {% for %} loops. 
         Pushes a new local scope containing the loop variable and the built-in 'loop' object.
+        Also validates that the iterated value is actually iterable.
         """
+        # Check if the iterated value is actually iterable
+        self._check_iterable(node.iter, node.lineno)
+        
         self.visit(node.iter)
         
         local_scope = {"loop": {"__type__": "LoopObject"}}
