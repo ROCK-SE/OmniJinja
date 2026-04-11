@@ -1,6 +1,9 @@
 # OmniJinja
 **An Omni VSCode Extension for the Jinja Template Engine.**
+
 OmniJinja goes far beyond standard syntax highlighting. It acts as an intelligent bridge between your Python backend (like Flask) and your frontend Jinja2/HTML templates. Powered by a background analysis engine, it deeply understands your custom context variables, filters, macros, and data flow etc.
+
+---
 
 ## Key Features
 
@@ -33,7 +36,7 @@ Navigate massive codebases with ease. **Ctrl+Click** (or **Cmd+Click**) on a con
 
 OmniJinja runs a lightweight Python analysis engine in the background. To use this extension, you must meet the following requirement:
 
-* **Python Environment**: Python must be installed on your system. The extension will automatically attempt to use `python3` or `python` from your system's PATH.
+**Python Environment**: Python must be installed on your system. The extension will automatically attempt to use `python3` or `python` from your system's PATH.
 
 ---
 
