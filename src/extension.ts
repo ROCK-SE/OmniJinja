@@ -8,7 +8,7 @@
  */
 
 import * as vscode from 'vscode';
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -156,8 +156,42 @@ export class OmniJinjaFixer implements vscode.CodeActionProvider {
 // Extension Activation & Lifecycle
 // ==========================================
 
+let activePythonCmd = 'python'; 
+
+async function resolvePythonPath(): Promise<string | undefined> {
+    const config = vscode.workspace.getConfiguration('omnijinja');
+    const customPath = config.get<string>('pythonPath');
+    if (customPath && customPath.trim() !== '') return customPath;
+
+    const commands = ['python3', 'python'];
+    for (const cmd of commands) {
+        try {
+            execSync(`${cmd} --version`, { stdio: 'ignore', timeout: 1000 });
+            return cmd;
+        } catch (e) {
+            continue;
+        }
+    }
+    return undefined; 
+}
+
+
 export async function activate(context: vscode.ExtensionContext) {
     console.log('🚀 OmniJinja activated successfully!');
+
+    const resolvedCmd = await resolvePythonPath();
+    if (!resolvedCmd) {
+        vscode.window.showErrorMessage(
+            "OmniJinja: Unable to find Python environment (python or python3). Please ensure that Python is installed, or manually specify the path in settings.",
+            "Open Settings"
+        ).then(selection => {
+            if (selection === "Open Settings") {
+                vscode.commands.executeCommand('workbench.action.openSettings', 'omnijinja.pythonPath');
+            }
+        });
+        return; 
+    }
+    activePythonCmd = resolvedCmd; // 保存探测到的可用命令
 
     diagnosticCollection = vscode.languages.createDiagnosticCollection('omnijinja');
     context.subscriptions.push(diagnosticCollection);
@@ -261,11 +295,22 @@ export async function activate(context: vscode.ExtensionContext) {
         if (templateFilesRegistry.has(deletedPyPath)) templateFilesRegistry.delete(deletedPyPath);
     });
 
-    const htmlWatcher = vscode.workspace.createFileSystemWatcher('**/*.html');
+    const htmlWatcher = vscode.workspace.createFileSystemWatcher('**/*.{html,jinja,j2,jinja2}');
+    
     htmlWatcher.onDidDelete((uri) => {
+        const deletedHtmlPath = uri.fsPath;
+        const baseName = path.basename(deletedHtmlPath);
+
         diagnosticCollection.delete(uri); 
-        internalJinjaRegistry.delete(path.basename(uri.fsPath));
-        fixedCodeRegistry.delete(uri.fsPath); // Clear the fix cache for deleted files
+        internalJinjaRegistry.delete(baseName);
+        fixedCodeRegistry.delete(deletedHtmlPath);
+        externalRequirementsRegistry.delete(baseName); 
+
+        const safeName = baseName + "_jinja.json";
+        const jsonPath = path.join(workspaceRoot, 'jinja_schemas', safeName);
+        if (fs.existsSync(jsonPath)) {
+            fs.unlinkSync(jsonPath);
+        }
     });
 
     // ==========================================
@@ -772,7 +817,7 @@ async function processQueue(enginePath: string, workspaceRoot: string) {
     while (parseQueue.length > 0) {
         const filePath = parseQueue.shift()!; 
         const scriptPath = path.join(enginePath, 'main_py_parser.py');
-        const command = `python "${scriptPath}" "${filePath}" "${workspaceRoot}"`;
+        const command = `${activePythonCmd} "${scriptPath}" "${filePath}" "${workspaceRoot}"`;
 
         const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
         const content = doc ? doc.getText() : fs.readFileSync(filePath, 'utf-8');
@@ -806,8 +851,7 @@ async function processJinjaQueue(enginePath: string, workspaceRoot: string) {
     while (jinjaParseQueue.length > 0) {
         const filePath = jinjaParseQueue.shift()!; 
         const scriptPath = path.join(enginePath, 'main_jinja_parser.py');
-        const command = `python "${scriptPath}" "${filePath}" "${workspaceRoot}"`;
-
+        const command = `${activePythonCmd} "${scriptPath}" "${filePath}" "${workspaceRoot}"`;
         const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
         const content = doc ? doc.getText() : fs.readFileSync(filePath, 'utf-8');
 

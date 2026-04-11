@@ -19,6 +19,16 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "OmniJinja",
+      "properties": {
+        "omnijinja.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Customize the Python interpreter path (e.g., 'python3' or '/usr/bin/python3'). Leave it blank to attempt automatic detection."
+        }
+      }
+    },
     "languages": [
       {
         "id": "jinja",
