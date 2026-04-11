@@ -60,4 +60,4 @@ Start typing `{{` or `{%` in your templates, or hover over a variable, to see th
 
 ---
 
-**Enjoy building with Jinja!** ```
+**Enjoy building with Jinja!** 
