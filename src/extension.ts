@@ -57,6 +57,9 @@ let pyDiagnosticCollection: vscode.DiagnosticCollection;
  */
 const fixedCodeRegistry = new Map<string, string>();
 
+// Cache to store unique identifiers for ignored diagnostics
+const ignoredDiagnosticsCache = new Set<string>();
+
 // Background task queues and debounce timers for performance optimization
 const debounceTimers = new Map<string, NodeJS.Timeout>();
 const parseQueue: string[] = [];
@@ -104,6 +107,14 @@ function createBuiltinHover(type: string, signature: string, desc: string, cavea
     return new vscode.Hover(md);
 }
 
+/**
+ * Generates a unique key for a diagnostic based on file path, line, and message.
+ * This helps identify which specific warning to suppress.
+ */
+function getDiagnosticKey(uri: vscode.Uri, line: number, message: string): string {
+    return `${uri.fsPath}|${line}|${message}`;
+}
+
 // ==========================================
 // Code Action Provider (Lightbulb Quick Fix)
 // ==========================================
@@ -120,35 +131,37 @@ export class OmniJinjaFixer implements vscode.CodeActionProvider {
         token: vscode.CancellationToken
     ): vscode.ProviderResult<(vscode.CodeAction | vscode.Command)[]> {
         
-        // Step 1: Verify if an 'Error' level diagnostic from OmniJinja exists at the cursor
-        const hasSyntaxError = context.diagnostics.some(
-            d => d.severity === vscode.DiagnosticSeverity.Error && d.source === 'OmniJinja'
-        );
-        
-        if (!hasSyntaxError) {
-            return [];
+        const actions: vscode.CodeAction[] = [];
+
+        for (const diagnostic of context.diagnostics) {
+            if (diagnostic.source === 'OmniJinja') {
+                
+                if (diagnostic.severity === vscode.DiagnosticSeverity.Error) {
+                    const fixedCode = fixedCodeRegistry.get(document.uri.fsPath);
+                    if (fixedCode) {
+                        const fixAction = new vscode.CodeAction('Fix Jinja Syntax Error (OmniJinja)', vscode.CodeActionKind.QuickFix);
+                        fixAction.edit = new vscode.WorkspaceEdit();
+                        const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
+                        fixAction.edit.replace(document.uri, fullRange, fixedCode);
+                        actions.push(fixAction);
+                    }
+                }
+
+                // Provide "Ignore" action for Warnings (Yellow squiggly lines)
+                if (diagnostic.severity === vscode.DiagnosticSeverity.Warning) {
+                    const ignoreAction = new vscode.CodeAction('Ignore this warning (Locally)', vscode.CodeActionKind.QuickFix);
+                    ignoreAction.command = {
+                        title: 'Ignore Locally',
+                        command: 'omnijinja.ignoreDiagnostic',
+                        arguments: [document.uri, diagnostic]
+                    };
+                    
+                    actions.push(ignoreAction);
+                }
+            }
         }
 
-        // Step 2: Retrieve the repaired code provided by the Python backend (fixer.py)
-        const fixedCode = fixedCodeRegistry.get(document.uri.fsPath);
-        if (!fixedCode) {
-            return [];
-        }
-
-        // Step 3: Construct the Quick Fix action (Lightbulb 💡)
-        const fixAction = new vscode.CodeAction('Fix Jinja Syntax Error (OmniJinja Auto-Fix)', vscode.CodeActionKind.QuickFix);
-        fixAction.edit = new vscode.WorkspaceEdit();
-
-        // Step 4: Define the replacement range to cover the entire document
-        const fullRange = new vscode.Range(
-            document.positionAt(0),
-            document.positionAt(document.getText().length)
-        );
-
-        fixAction.edit.replace(document.uri, fullRange, fixedCode);
-        fixAction.isPreferred = true; // Instructs VS Code to prioritize this fix
-
-        return [fixAction];
+        return actions;
     }
 }
 
@@ -801,6 +814,24 @@ export async function activate(context: vscode.ExtensionContext) {
         definitionProvider, 
         templatePathProvider
     );
+    // Register the command to handle the "Ignore" action
+    context.subscriptions.push(vscode.commands.registerCommand('omnijinja.ignoreDiagnostic', (uri: vscode.Uri, diagnostic: vscode.Diagnostic) => {
+        const key = getDiagnosticKey(uri, diagnostic.range.start.line, diagnostic.message);
+        
+        // Add the diagnostic identifier to our local blacklist
+        ignoredDiagnosticsCache.add(key);
+        
+        // Immediately refresh the UI by filtering out the ignored diagnostic
+        const currentDiagnostics = diagnosticCollection.get(uri) || [];
+        const filtered = currentDiagnostics.filter(d => 
+            getDiagnosticKey(uri, d.range.start.line, d.message) !== key
+        );
+        
+        diagnosticCollection.set(uri, filtered);
+        
+        // Optional: Notify the user that the ignore is temporary for this session
+        vscode.window.setStatusBarMessage("Warning ignored for this session.", 3000);
+    }));
 }
 
 // ==========================================
@@ -924,43 +955,52 @@ function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string) {
 }
 
 /**
- * Reads the generated _jinja.json file, applies wavy underline diagnostics, 
- * and caches the repaired code for Quick Fixes.
+ * Reads the generated _jinja.json file from disk, updates internal registries, 
+ * and applies diagnostic wavy lines to the editor while respecting the ignore blacklist.
+ * * @param htmlFilePath - The absolute path to the template file (HTML/Jinja).
+ * @param workspaceRoot - The root path of the current workspace.
  */
 function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string) {
     const baseName = path.basename(htmlFilePath);
     const safeName = baseName + "_jinja.json"; 
     const jsonPath = path.join(workspaceRoot, 'jinja_schemas', safeName);
+    const uri = vscode.Uri.file(htmlFilePath);
 
-    if (!fs.existsSync(jsonPath)) {
-        diagnosticCollection.delete(vscode.Uri.file(htmlFilePath));
+    // 1. Check if diagnostics are globally enabled in settings
+    const config = vscode.workspace.getConfiguration('omnijinja');
+    const enabled = config.get<boolean>('enableDiagnostics', true);
+
+    // If schema file doesn't exist or diagnostics are disabled, clear existing markers and exit
+    if (!fs.existsSync(jsonPath) || !enabled) {
+        diagnosticCollection.delete(uri);
         return;
     }
 
     try {
         const data = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
         
-        const internalData = {};
+        // 2. Update memory registries for internal variables and macros
+        const internalData: any = {};
         if (data.internal_variables) {
             Object.assign(internalData, data.internal_variables);
         }
         if (data.macros) {
             Object.assign(internalData, data.macros);
         }
-        
         internalJinjaRegistry.set(baseName, internalData);
 
+        // 3. Cache the repaired code for the Quick Fix (Lightbulb) feature
         if (data.fixed_code) {
             fixedCodeRegistry.set(htmlFilePath, data.fixed_code);
         } else {
             fixedCodeRegistry.delete(htmlFilePath);
         }
 
-        // Extract and store External Requirements (Demand)
+        // 4. Update External Requirements (Demand) and trigger cross-file validation
         if (data.external_requirements) {
             externalRequirementsRegistry.set(baseName, data.external_requirements);
             
-            // TRIGGER VALIDATION: HTML changed, re-validate all Python files that supply this template
+            // Re-validate all Python files that supply variables to this specific template
             const pySourcesMap = templateRegistry.get(baseName);
             if (pySourcesMap) {
                 for (const pyPath of pySourcesMap.keys()) {
@@ -971,23 +1011,33 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string) 
             externalRequirementsRegistry.delete(baseName);
         }
 
+        // 5. Process and render Diagnostics (Wavy Underlines)
         if (data.diagnostics && Array.isArray(data.diagnostics)) {
             const diagnostics: vscode.Diagnostic[] = [];
             
-            // Check if this HTML template is rendered by any known Python file
+            // Check if this template is currently linked to any Python backend logic
             const isLinked = templateRegistry.has(baseName) && templateRegistry.get(baseName)!.size > 0;
 
             for (const diag of data.diagnostics) {
-                // Suppress "Undefined" warnings if the template is not linked to any Python backend yet
-                const isUndefinedWarning = diag.message && diag.message.toLowerCase().includes('undefined');
-                if (!isLinked && isUndefinedWarning) {
-                    continue; // Skip pushing this diagnostic
+                const lineNum = Math.max(0, (diag.line || 1) - 1);
+                const message = diag.message;
+
+                // --- SILENT IGNORE FILTER ---
+                // Skip this diagnostic if its unique key exists in the local ignore cache
+                if (ignoredDiagnosticsCache.has(getDiagnosticKey(uri, lineNum, message))) {
+                    continue; 
                 }
 
-                const lineNum = Math.max(0, (diag.line || 1) - 1);
-                
+                // --- CONTEXTUAL FILTER ---
+                // Suppress "Undefined" warnings if the template isn't linked to a backend yet
+                const isUndefinedWarning = message.toLowerCase().includes('undefined');
+                if (!isLinked && isUndefinedWarning) {
+                    continue; 
+                }
+
+                // --- RANGE CALCULATION ---
                 let colNum = 0;
-                let length = 1000; 
+                let length = 1000; // Default to a long length if column data is missing
                 
                 if (diag.col) {
                     colNum = Math.max(0, diag.col - 1);
@@ -995,19 +1045,25 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string) 
                 }
                 
                 const range = new vscode.Range(lineNum, colNum, lineNum, colNum + length);
-                const severity = diag.severity === 'error' ? vscode.DiagnosticSeverity.Error : vscode.DiagnosticSeverity.Warning;
+                const severity = diag.severity === 'error' ? 
+                    vscode.DiagnosticSeverity.Error : 
+                    vscode.DiagnosticSeverity.Warning;
                 
-                const diagnostic = new vscode.Diagnostic(range, diag.message, severity);
+                // Create the VS Code diagnostic object
+                const diagnostic = new vscode.Diagnostic(range, message, severity);
                 diagnostic.source = 'OmniJinja';
                 diagnostics.push(diagnostic);
             }
-            diagnosticCollection.set(vscode.Uri.file(htmlFilePath), diagnostics);
+            
+            // Push the filtered list of diagnostics to the editor UI
+            diagnosticCollection.set(uri, diagnostics);
         } else {
-            diagnosticCollection.delete(vscode.Uri.file(htmlFilePath));
+            // Clear diagnostics if the JSON payload contains no issues
+            diagnosticCollection.delete(uri);
         }
 
     } catch (e) {
-        console.error(`Failed to load Jinja JSON schema: ${safeName}`, e);
+        console.error(`OmniJinja: Failed to load Jinja JSON schema for ${baseName}`, e);
     }
 }
 

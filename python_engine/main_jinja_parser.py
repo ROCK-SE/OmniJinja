@@ -63,8 +63,23 @@ def main():
     # Read the live template code directly from standard input memory stream
     template_code = sys.stdin.read()
         
+    code_lines = template_code.splitlines()
+    
     template_dir = os.path.dirname(template_path)
 
+
+    def is_ignored(line_number):
+        idx = line_number - 1
+        if idx < 0 or idx >= len(code_lines):
+            return False
+        
+        ignore_tag = "{# omnijinja-ignore #}"
+        if ignore_tag in code_lines[idx]:
+            return True
+        if idx > 0 and ignore_tag in code_lines[idx - 1]:
+            return True
+        return False
+    
     # 1. Metadata Extraction
     block_extractor = JinjaBlockExtractor(template_dir)
     blocks = block_extractor.get_inherited_blocks(template_code)
@@ -79,7 +94,8 @@ def main():
     # 2. Diagnostic Generation
     # Undefined - Warnings
     linter = JinjaUndefinedLinter(backend_schema)
-    diagnostics = linter.lint(template_code)
+    raw_undefined_diagnostics = linter.lint(template_code)
+    diagnostics = [d for d in raw_undefined_diagnostics if not is_ignored(d.get('line', 0))]
 
     # Syntax Errors - Errors + Fixes
     all_syntax_issues = analyze_template(template_code)
@@ -96,6 +112,9 @@ def main():
                 pass 
         
         for err in all_syntax_issues:
+            if is_ignored(err.line):
+                continue
+            
             is_warning = "Rule 5" in err.rule
             severity_level = "warning" if is_warning else "error"
             
