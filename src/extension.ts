@@ -217,7 +217,7 @@ export async function activate(context: vscode.ExtensionContext) {
     if (!workspaceRoot) return;
     const pythonEnginePath = path.join(context.extensionPath, 'python_engine');
 
-    const supportedLanguages = ['html', 'jinja', 'django-html', 'jinja-html', 'django-txt'];
+    const supportedLanguages = ['html', 'jinja', 'jinja-html', 'jinja2'];
 
     // Register the Quick Fix Code Action Provider
     context.subscriptions.push(
