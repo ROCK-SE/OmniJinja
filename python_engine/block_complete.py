@@ -6,7 +6,6 @@ It identifies 'extends' tags and recursively crawls through parent templates
 to extract block names available for overriding in the current child template.
 """
 
-import os
 from pathlib import Path
 from jinja2 import Environment, nodes
 

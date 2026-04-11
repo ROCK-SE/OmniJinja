@@ -5,7 +5,7 @@ Extracts local variable definitions (e.g., from {% set %} and {% for %}) within
 Jinja2 templates. It resolves types by bridging the gap between template 
 logic and backend Python schemas.
 """
-import json
+
 import re
 from jinja2 import Environment, nodes
 from jinja2.visitor import NodeVisitor
@@ -97,7 +97,8 @@ class JinjaSymbolExtractor(NodeVisitor):
     #     {{item.age}}
     # {% endfor %} 
     # Evaluates the iterable object to determine the true data type of its elements 
-    #        (e.g., extracting the 'Order' schema from a list of 'orders').
+    # (e.g., extracting the 'Order' schema from a list of 'orders').
+    
     def visit_For(self, node: nodes.For):
         self.visit(node.iter)
         iter_path = self._extract_path(node.iter)

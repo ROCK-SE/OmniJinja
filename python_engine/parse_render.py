@@ -37,7 +37,6 @@ class FlaskTemplateVisitor(ast.NodeVisitor):
         try:
             self.ast = ast.parse(code)
         except SyntaxError:
-            # Fallback/retry for minor syntax errors, or set to None if unparseable
             try:
                 self.ast = ast.parse(code)
             except Exception:

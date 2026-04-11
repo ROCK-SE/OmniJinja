@@ -75,7 +75,7 @@ class JinjaUndefinedLinter(NodeVisitor):
                 break
                 
         if found_in_scope is None:
-            # 🌟 Deliberately downgraded to 'warning' severity.
+            # Deliberately downgraded to 'warning' severity.
             # In dynamic templates, variables might be injected at runtime outside the parsed schema.
             self.diagnostics.append({
                 "line": lineno, 
