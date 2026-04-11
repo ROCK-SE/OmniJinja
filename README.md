@@ -1,7 +1,9 @@
 # OmniJinja
 **An Omni VSCode Extension for the Jinja Template Engine.**
 
-OmniJinja goes far beyond standard syntax highlighting. It acts as an intelligent bridge between your Python backend (like Flask) and your frontend Jinja2/HTML templates. Powered by a background analysis engine, it deeply understands your custom context variables, filters, macros, and data flow etc.
+OmniJinja goes far beyond standard syntax highlighting. It acts as an intelligent bridge between your Python backend (like Flask) and your frontend Jinja2/HTML templates. 
+
+Powered by a background analysis engine, it deeply understands your custom context variables, filters, macros, and data flow etc.
 
 ---
 
