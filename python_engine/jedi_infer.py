@@ -11,32 +11,18 @@ class JediPropertyExtractor:
     def __init__(self, source_code: str, max_depth: int = 2):
         """
         Initializes the extractor with source code and recursion limits.
-        
-        Args:
-            source_code (str): The Python source to be analyzed.
-            max_depth (int): Depth limit for exploring nested attributes.
         """
         self.source_code = source_code
         self.script = jedi.Script(source_code) 
         self.max_depth = max_depth
         
         self.native_types = {
-            'str': '<String>', 'list': '<List>', 'int': '<Integer>', 
-            'float': '<Float>', 'bool': '<Boolean>', 'dict': '<Dictionary>',
-            'tuple': '<Tuple>', 'set': '<Set>'
+            'str': 'String', 'list': 'List', 'int': 'Integer', 
+            'float': 'Float', 'bool': 'Boolean', 'dict': 'Dictionary',
+            'tuple': 'Tuple', 'set': 'Set'
         }
 
     def _get_func_info(self, obj_with_doc, func_name) -> dict:
-        """
-        Extracts metadata from a function or method object.
-        
-        Args:
-            obj_with_doc: A Jedi Name or Value object with documentation.
-            func_name (str): The name of the function.
-            
-        Returns:
-            dict: Metadata including signature, arguments, and docstrings.
-        """
         raw_doc = obj_with_doc.docstring()
         clean_doc = self._clean_docstring(raw_doc, func_name)
         args = []
@@ -61,18 +47,6 @@ class JediPropertyExtractor:
         }
 
     def _infer_type_name(self, original_line: int, original_col: int, original_code_str: str, current_expr: str) -> str:
-        """
-        Infers the class name of an expression at a specific source location.
-        
-        Args:
-            original_line: Line number in original source.
-            original_col: Column offset in original source.
-            original_code_str: The original variable/expression name.
-            current_expr: The temporary expression to probe.
-            
-        Returns:
-            str: The resolved class name or 'Object' if unresolved.
-        """
         if original_line is None or original_col is None: return "Object"
         try:
             lines = self.source_code.split('\n')
@@ -91,18 +65,6 @@ class JediPropertyExtractor:
         return "Object"
 
     def enrich_template_context(self, ast_results: list) -> list:
-        """
-        The primary public method to resolve types for all template variables.
-        
-        Takes the raw coordinates from AST analysis and uses Jedi to determine 
-        the actual object structure for each variable.
-        
-        Args:
-            ast_results (list): Output from the initial AST-based render_template scanner.
-            
-        Returns:
-            list: The same list enriched with deep type schemas and property maps.
-        """
         final_results = []
         for call in ast_results:
             enriched_context = {}
@@ -112,10 +74,16 @@ class JediPropertyExtractor:
                 code_str = var_info.get('code', '') 
                 
                 if not code_str:
-                    enriched_context[var_name] = "<Unknown>"
+                    enriched_context[var_name] = {"__type__": "Any", "__is_iterable__": False}
                     continue
-                if code_str.startswith("'") or code_str.startswith('"') or code_str.isdigit():
-                    enriched_context[var_name] = code_str
+                if code_str.startswith("'") or code_str.startswith('"'):
+                    enriched_context[var_name] = {"__type__": "String", "__is_iterable__": True, "value": code_str}
+                    continue
+                if code_str.isdigit():
+                    enriched_context[var_name] = {"__type__": "Integer", "__is_iterable__": False, "value": code_str}
+                    continue
+                if code_str in ["True", "False"]:
+                    enriched_context[var_name] = {"__type__": "Boolean", "__is_iterable__": False, "value": code_str}
                     continue
 
                 try:
@@ -128,7 +96,7 @@ class JediPropertyExtractor:
                             if inner_props:
                                 element_class_name = self._infer_type_name(line, column, code_str, inner_expr)
                                 enriched_context[var_name] = {
-                                    "__type__": inf.name.capitalize(), # "List", "Set", "Tuple"
+                                    "__type__": inf.name.capitalize(),
                                     "__is_iterable__": True,
                                     "__element__": {
                                         "__type__": element_class_name,
@@ -137,15 +105,22 @@ class JediPropertyExtractor:
                                     }
                                 }
                             else:
-                                enriched_context[var_name] = f"{code_str}{self.native_types[inf.name]}"
+                                enriched_context[var_name] = {
+                                    "__type__": inf.name.capitalize(),
+                                    "__is_iterable__": True,
+                                    "def_line": getattr(inf, 'line', None)
+                                }
                         
                         elif inf.name in self.native_types:
-                            enriched_context[var_name] = f"{code_str}{self.native_types[inf.name]}"
+                            enriched_context[var_name] = {
+                                "__type__": self.native_types[inf.name],
+                                "__is_iterable__": inf.name in ['str', 'dict'],
+                                "def_line": getattr(inf, 'line', None)
+                            }
                         
                         elif inf.type in ['instance', 'class', 'module']:
                             props = self._get_properties(line, column, code_str, code_str, 1)
                             class_name = inf.name if inf.name else "Object"
-                            
                             is_iterable = class_name.endswith('Query') or class_name.endswith('Set')
                             
                             if props:
@@ -162,11 +137,15 @@ class JediPropertyExtractor:
                                     "def_line": getattr(inf, 'line', None)
                                 }
                         else:
-                            enriched_context[var_name] = f"{code_str}<{inf.type.capitalize()}>"
+                            enriched_context[var_name] = {
+                                "__type__": inf.type.capitalize(),
+                                "__is_iterable__": False,
+                                "def_line": getattr(inf, 'line', None)
+                            }
                     else:
-                        enriched_context[var_name] = code_str
+                        enriched_context[var_name] = {"__type__": "Any", "__is_iterable__": False}
                 except Exception as e:
-                    enriched_context[var_name] = f"{code_str}<Inference Failed>"
+                    enriched_context[var_name] = {"__type__": "Any", "__is_iterable__": False, "error": str(e)}
                     
             final_results.append({
                 "template": call["template"],
@@ -184,7 +163,6 @@ class JediPropertyExtractor:
     def _get_properties(self, original_line: int, original_col: int, original_code_str: str, current_expr: str, current_depth: int) -> dict:
         """
         Recursively discovers properties and methods of an object.
-        Uses Jedi's completion engine by simulating a 'dot' access in a temporary buffer.
         """
         if current_depth > self.max_depth: return {}
         if original_line is None or original_col is None: return {}
@@ -214,23 +192,32 @@ class JediPropertyExtractor:
             if inferences:
                 inf = inferences[0]
                 if inf.name in self.native_types:
-                    properties[c.name] = self.native_types[inf.name]
+                    properties[c.name] = {
+                        "__type__": self.native_types[inf.name],
+                        "__is_iterable__": inf.name in ['str', 'dict'],
+                        "def_line": getattr(inf, 'line', None)
+                    }
                 elif inf.type in ['instance', 'class']:
                     next_expr = f"{current_expr}.{c.name}"
                     sub_props = self._get_properties(original_line, original_col, original_code_str, next_expr, current_depth + 1)
                     class_name = inf.name if inf.name else "Object"
+                    is_iter = class_name.endswith('Query') or class_name.endswith('Set')
                     if sub_props:
-                        properties[c.name] = {"__type__": class_name, "def_line": getattr(inf, 'line', None), **sub_props}
+                        properties[c.name] = {"__type__": class_name, "__is_iterable__": is_iter, "def_line": getattr(inf, 'line', None), **sub_props}
                     else:
-                        properties[c.name] = {"__type__": class_name, "def_line": getattr(inf, 'line', None)}
+                        properties[c.name] = {"__type__": class_name, "__is_iterable__": is_iter, "def_line": getattr(inf, 'line', None)}
                 elif inf.type == 'function':
                     properties[c.name] = self._get_func_info(inf, c.name)
                 else:
-                    properties[c.name] = f"<{inf.type.capitalize()}>"
+                    properties[c.name] = {
+                        "__type__": inf.type.capitalize(),
+                        "__is_iterable__": False,
+                        "def_line": getattr(inf, 'line', None)
+                    }
             else:
                 if c.type == 'function':
                     properties[c.name] = self._get_func_info(c, c.name)
                 else:
-                    properties[c.name] = "<Property>"
+                    properties[c.name] = {"__type__": "Any", "__is_iterable__": False}
                 
         return properties

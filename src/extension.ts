@@ -204,7 +204,7 @@ export async function activate(context: vscode.ExtensionContext) {
         });
         return; 
     }
-    activePythonCmd = resolvedCmd; // 保存探测到的可用命令
+    activePythonCmd = resolvedCmd; 
 
     diagnosticCollection = vscode.languages.createDiagnosticCollection('omnijinja');
     context.subscriptions.push(diagnosticCollection);
