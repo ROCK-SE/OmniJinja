@@ -15,19 +15,16 @@ from pathlib import Path
 from block_complete import JinjaBlockExtractor
 from marco_complete import JinjaMacroExtractor
 from extract_internal_symbols import JinjaSymbolExtractor
-from variable_undefined import JinjaUndefinedLinter
+from template_semantic_linter import JinjaSemanticLinter
 from detector import analyze_template
 from fixer import fix_template
 from template_variable import extract_external_requirements
 
 def get_merged_backend_schema(output_schemas_dir, target_template_name):
-    """
-    Reads backend schemas and precisely extracts context variables 
-    intended ONLY for the target template.
-    """
     merged_schema = {}
+    custom_filters = set() 
     if not os.path.exists(output_schemas_dir):
-        return merged_schema
+        return merged_schema, custom_filters
         
     for filename in os.listdir(output_schemas_dir):
         if filename.endswith("_schema.json") and not filename.endswith("_jinja.json"):
@@ -35,14 +32,20 @@ def get_merged_backend_schema(output_schemas_dir, target_template_name):
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                    
                     if "render_calls" in data:
                         for call in data["render_calls"]:
                             call_template_name = os.path.basename(call.get("template", ""))
                             if call_template_name == target_template_name:
                                 merged_schema.update(call.get("context", {}))
+                                
+                    if "custom_filters" in data:
+                        for cf in data["custom_filters"]:
+                            custom_filters.add(cf.get("name"))
             except Exception:
                 pass
-    return merged_schema
+                
+    return merged_schema, custom_filters
 
 def main():
     """
@@ -63,11 +66,10 @@ def main():
     workspace_root = sys.argv[2]
     
     target_template_name = os.path.basename(template_path)
-    
     output_schemas_dir = os.path.join(workspace_root, "output_schemas")
     jinja_schemas_dir = os.path.join(workspace_root, "jinja_schemas")
     
-    backend_schema = get_merged_backend_schema(output_schemas_dir, target_template_name)
+    backend_schema, custom_filters = get_merged_backend_schema(output_schemas_dir, target_template_name)    
     
     template_code = sys.stdin.read()
         
@@ -101,7 +103,7 @@ def main():
     
     # 2. Diagnostic Generation
     # Undefined - Warnings
-    linter = JinjaUndefinedLinter(backend_schema)
+    linter = JinjaSemanticLinter(backend_schema, custom_filters)
     raw_undefined_diagnostics = linter.lint(template_code)
     diagnostics = [d for d in raw_undefined_diagnostics if not is_ignored(d.get('line', 0))]
 

@@ -11,9 +11,10 @@ squiggles) for missing or mismatched variables.
 
 from jinja2 import Environment, nodes
 from jinja2.visitor import NodeVisitor
+from jinja2.filters import FILTERS
 from typing import List, Dict, Any
 
-class JinjaUndefinedLinter(NodeVisitor):
+class JinjaSemanticLinter(NodeVisitor):
     """
     An AST Visitor that traverses Jinja2 templates to lint variable scoping.
     
@@ -27,11 +28,12 @@ class JinjaUndefinedLinter(NodeVisitor):
         BUILTIN_GLOBALS (Set[str]): A set of Jinja2 built-in global functions/variables.
     """
 
-    def __init__(self, backend_schema: dict):
+    def __init__(self, backend_schema: dict, custom_filters: set = None):
         """
         Initializes the linter with the global backend schema.
         """
         self.backend_schema = backend_schema or {}
+        self.custom_filters = custom_filters or set()
         self.diagnostics: List[Dict[str, Any]] = []
         
         # Initialize the scope stack with the global backend context at the base
@@ -39,6 +41,9 @@ class JinjaUndefinedLinter(NodeVisitor):
         
         # Standard Jinja2 built-in globals that should never trigger an 'undefined' warning
         self.BUILTIN_GLOBALS = {'range', 'dict', 'lipsum', 'super', 'cycler', 'joiner', 'namespace'}
+        
+        # Jinja2 built-in filters + our Python backend custom filters
+        self.BUILTIN_FILTERS = set(FILTERS.keys())
 
     def _extract_path(self, node: nodes.Node) -> list:
         """
@@ -239,6 +244,22 @@ class JinjaUndefinedLinter(NodeVisitor):
         path = self._extract_path(node)
         if path: 
             self._check_undefined(path, node.lineno)
+
+    def visit_Filter(self, node: nodes.Filter):
+        """
+        Triggers undefined checks for filters.
+        Evaluates if the filter used is a built-in Jinja filter or defined in Python.
+        """
+        self.generic_visit(node)
+        
+        filter_name = node.name
+        
+        if filter_name not in self.BUILTIN_FILTERS and filter_name not in self.custom_filters:
+            self.diagnostics.append({
+                "line": node.lineno, 
+                "message": f"⚠️ Undefined Filter Warning: The filter '{filter_name}' is neither a built-in Jinja filter nor a registered custom filter.", 
+                "severity": "warning"
+            })
 
     def lint(self, template_code: str) -> list:
         """
