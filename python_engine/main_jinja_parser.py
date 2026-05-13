@@ -20,7 +20,11 @@ from detector import analyze_template
 from fixer import fix_template
 from template_variable import extract_external_requirements
 
-def get_merged_backend_schema(output_schemas_dir):
+def get_merged_backend_schema(output_schemas_dir, target_template_name):
+    """
+    Reads backend schemas and precisely extracts context variables 
+    intended ONLY for the target template.
+    """
     merged_schema = {}
     if not os.path.exists(output_schemas_dir):
         return merged_schema
@@ -33,7 +37,9 @@ def get_merged_backend_schema(output_schemas_dir):
                     data = json.load(f)
                     if "render_calls" in data:
                         for call in data["render_calls"]:
-                            merged_schema.update(call.get("context", {}))
+                            call_template_name = os.path.basename(call.get("template", ""))
+                            if call_template_name == target_template_name:
+                                merged_schema.update(call.get("context", {}))
             except Exception:
                 pass
     return merged_schema
@@ -55,12 +61,14 @@ def main():
 
     template_path = sys.argv[1]
     workspace_root = sys.argv[2]
+    
+    target_template_name = os.path.basename(template_path)
+    
     output_schemas_dir = os.path.join(workspace_root, "output_schemas")
     jinja_schemas_dir = os.path.join(workspace_root, "jinja_schemas")
     
-    backend_schema = get_merged_backend_schema(output_schemas_dir)
+    backend_schema = get_merged_backend_schema(output_schemas_dir, target_template_name)
     
-    # Read the live template code directly from standard input memory stream
     template_code = sys.stdin.read()
         
     code_lines = template_code.splitlines()
