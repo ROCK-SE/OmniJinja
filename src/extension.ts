@@ -228,34 +228,41 @@ export async function activate(context: vscode.ExtensionContext) {
         )
     );
 
-    // Initial workspace scan: Find and queue all relevant Python files and Jinja templates
+    // Initial workspace scan
     vscode.window.withProgress({
         location: vscode.ProgressLocation.Window,
-        title: "OmniJinja: Initializing Workspace...",
+        title: "OmniJinja: Loading Cache & Initializing...",
     }, async (progress) => {
-        // Process Python files
         const pyFiles = await vscode.workspace.findFiles('**/*.py', '**/{node_modules,.venv,venv}/**');
-        const filesToParse = pyFiles.filter(uri => {
-            const content = fs.readFileSync(uri.fsPath, 'utf-8');
-            // Optimization: Only parse files likely to contain Flask/Jinja logic
-            return content.includes('flask') || content.includes('jinja');
-        });
-        for (const file of filesToParse) parseQueue.push(file.fsPath);
-        await processQueue(pythonEnginePath, workspaceRoot);
+        
+        for (const file of pyFiles) {
+            loadSchemaIntoMemory(file.fsPath, workspaceRoot, pythonEnginePath);
+        }
 
-        // Process Jinja template files (html, jinja, j2, and other template extensions)
         const templatePatterns = ['**/*.html', '**/*.jinja', '**/*.j2', '**/*.jinja2'];
         const excludePattern = '**/{node_modules,.venv,venv}/**';
-        
+        const allTemplateFiles: vscode.Uri[] = [];
+
         for (const pattern of templatePatterns) {
             const templateFiles = await vscode.workspace.findFiles(pattern, excludePattern);
             for (const file of templateFiles) {
-                if (!jinjaParseQueue.includes(file.fsPath)) {
-                    jinjaParseQueue.push(file.fsPath);
-                }
+                allTemplateFiles.push(file);
+                loadJinjaSchemaIntoMemory(file.fsPath, workspaceRoot); 
             }
         }
-        await processJinjaQueue(pythonEnginePath, workspaceRoot);
+
+        const filesToParse = pyFiles.filter(uri => {
+            try {
+                const content = fs.readFileSync(uri.fsPath, 'utf-8');
+                return content.includes('flask') || content.includes('jinja');
+            } catch(e) { return false; }
+        });
+        
+        for (const file of filesToParse) parseQueue.push(file.fsPath);
+        for (const file of allTemplateFiles) jinjaParseQueue.push(file.fsPath);
+
+        processQueue(pythonEnginePath, workspaceRoot);
+        processJinjaQueue(pythonEnginePath, workspaceRoot);
     });
 
     // Real-time File Change Listeners for Instant Reprocessing
@@ -864,7 +871,7 @@ async function processQueue(enginePath: string, workspaceRoot: string) {
                     child.stdin.end();
                 }
             });
-            loadSchemaIntoMemory(filePath, workspaceRoot);
+            loadSchemaIntoMemory(filePath, workspaceRoot, enginePath); 
         } catch (e) {
             console.error(`Python Backend Parsing Error: ${filePath}`, e);
         }
@@ -908,7 +915,7 @@ async function processJinjaQueue(enginePath: string, workspaceRoot: string) {
 /**
  * Reads the generated _schema.json file and updates the in-memory registries.
  */
-function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string) {
+function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string, enginePath: string) {
     const baseName = path.basename(pyFilePath);
     const safeName = baseName + "_schema.json";
     const jsonPath = path.join(workspaceRoot, 'output_schemas', safeName);
@@ -918,23 +925,54 @@ function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string) {
     try {
         const schemaData = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
         
+        const affectedTemplates = new Set<string>();
+
+        const oldCalls = renderCallRegistry.get(pyFilePath);
+        if (oldCalls) {
+            for (const oldCall of oldCalls) {
+                const oldTemplateName = path.basename(oldCall.template);
+                affectedTemplates.add(oldTemplateName); 
+
+                const sourceMap = templateRegistry.get(oldTemplateName);
+                if (sourceMap && sourceMap.has(pyFilePath)) {
+                    sourceMap.delete(pyFilePath); 
+                    if (sourceMap.size === 0) templateRegistry.delete(oldTemplateName);
+                }
+            }
+        }
+
         if (schemaData.render_calls) {
-            // Save raw calls for data flow validation
             renderCallRegistry.set(pyFilePath, schemaData.render_calls);
 
             for (const call of schemaData.render_calls) {
                 const templateName = path.basename(call.template);
+                affectedTemplates.add(templateName); 
+
                 if (!templateRegistry.has(templateName)) {
                     templateRegistry.set(templateName, new Map<string, any>());
                 }
                 templateRegistry.get(templateName)!.set(pyFilePath, call.context);
             }
 
-            // TRIGGER VALIDATION: Python changed, re-validate supply against existing demand
             validateDataFlow(pyFilePath);
         } else {
             renderCallRegistry.delete(pyFilePath);
             pyDiagnosticCollection.delete(vscode.Uri.file(pyFilePath));
+        }
+
+        for (const templateName of affectedTemplates) {
+            vscode.workspace.findFiles(`**/${templateName}`, '**/{node_modules,.venv,venv}/**').then(uris => {
+                if (uris.length > 0) {
+                    const htmlPath = uris[0].fsPath;
+                    
+                    loadJinjaSchemaIntoMemory(htmlPath, workspaceRoot);
+
+                    if (!jinjaParseQueue.includes(htmlPath)) {
+                        jinjaParseQueue.push(htmlPath);
+                        processJinjaQueue(enginePath, workspaceRoot);
+                    }
+                }
+            });
         }
 
         if (schemaData.custom_filters && schemaData.custom_filters.length > 0) {
