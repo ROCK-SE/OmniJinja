@@ -155,10 +155,25 @@ class JinjaSymbolExtractor(NodeVisitor):
                 "loop": self.LOOP_PROPERTIES
             }
             
-            # Without closing tag, assume scope ends at EOF (999999)
+            # # Without closing tag, assume scope ends at EOF (999999)
+            # self.extracted_data["scoped"].append({
+            #     "type": "for_fallback",
+            #     "scope_range": {"start_line": start_line, "end_line": 999999},
+            #     "vars": scoped_vars
+            # })
+            
+            text_after_for = template_code[match.end():]
+            endfor_match = re.search(r'\{%\s*endfor\s*%\}', text_after_for)
+            
+            if endfor_match:
+                lines_between = text_after_for[:endfor_match.end()].count('\n')
+                end_line = start_line + lines_between
+            else:
+                end_line = 999999
+            
             self.extracted_data["scoped"].append({
                 "type": "for_fallback",
-                "scope_range": {"start_line": start_line, "end_line": 999999},
+                "scope_range": {"start_line": start_line, "end_line": end_line},
                 "vars": scoped_vars
             })
 
