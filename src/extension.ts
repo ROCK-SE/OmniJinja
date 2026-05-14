@@ -1130,6 +1130,8 @@ function validateDataFlow(pyFilePath: string) {
         const lineNum = Math.max(0, (call.render_line || 1) - 1);
 
         for (const [reqKey, reqVal] of Object.entries(demand)) {
+            if (reqKey.startsWith('__')) continue;
+
             if (!(reqKey in supply)) {
                 // ROOT MISSING -> Warning
                 const range = new vscode.Range(lineNum, 0, lineNum, 50); // Highlight start of line
