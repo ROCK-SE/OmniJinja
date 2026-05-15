@@ -18,7 +18,7 @@ from extract_internal_symbols import JinjaSymbolExtractor
 from template_semantic_linter import JinjaSemanticLinter
 from detector import analyze_template
 from fixer import fix_template
-from template_variable import extract_external_requirements
+from extract_external_symbols import extract_external_requirements
 
 def get_merged_backend_schema(output_schemas_dir, target_template_name):
     merged_schema = {}
