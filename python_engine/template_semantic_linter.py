@@ -1,12 +1,8 @@
 """
 OmniJinja Semantic Linter
 -------------------------
-This module provides a static analysis visitor that checks for undefined variables 
-and invalid property accesses within Jinja2 templates. 
-
-Unlike the structural syntax detector (which emits Errors), this linter evaluates 
-the logical context based on the Python backend schema and emits Warnings (yellow 
-squiggles) for missing or mismatched variables.
+Check if the variables, attribute paths, 
+and loop objects used in the template can be found in the current scope or Python backend context.
 """
 
 from jinja2 import Environment, nodes

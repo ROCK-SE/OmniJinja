@@ -1,9 +1,8 @@
 """
 OmniJinja Internal Symbol Extractor
 ----------------------------------
-Extracts local variable definitions (e.g., from {% set %} and {% for %}) within 
-Jinja2 templates. It resolves types by bridging the gap between template 
-logic and backend Python schemas.
+Extract variables introduced within the template, 
+such as {% set %}, {% for %}, and macros, for use in completion and scope modeling.
 """
 
 import re

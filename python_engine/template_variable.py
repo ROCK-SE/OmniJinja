@@ -1,5 +1,9 @@
 from jinja2 import Environment, nodes
 from jinja2.visitor import NodeVisitor
+'''
+Extract the data that actually needs to be provided by Python from the template, 
+and use extension.ts to perform a reverse check to see if render_template has been passed completely.
+'''
 
 STANDARD_METHODS = {
     'upper', 'lower', 'capitalize', 'replace', 'split', 'strip', 'startswith', 'endswith',
