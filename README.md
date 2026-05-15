@@ -13,7 +13,10 @@ The result is a more context-aware editing experience for Jinja templates and ea
 
 ## Key Features
 
-OmniJinja provides editor support from three complementary perspectives: **Python-to-Template assistance**, **Template-to-Python validation**, and **Template-local Jinja support**.
+OmniJinja provides editor support from three complementary perspectives: 
+* **Python-to-Template assistance**
+* **Template-to-Python validation**
+* **Template-local Jinja support**
 
 ### 1. Python-to-Template Assistance
 
@@ -31,10 +34,10 @@ return render_template(
 OmniJinja can use this render context to provide template-side editor features.
 Supported features include:
 
-* Placeholder completion for variables passed from Python, such as user and `show_stats`;
+* Placeholder completion for variables passed from Python, such as `user` and `show_stats`;
 * Property completion for inferred object fields, such as `user.name` or `user.profile.avatar`;
 * Custom filter completion for filters registered in Python;
-* Template path completion for {% extends %} and {% include %};
+* Template path completion for `{% extends %}` and `{% include %}`;
 * Hover information for Python-backed variables, properties, methods, and filters;
 * Signature help for callable objects, methods, macros, and filters;
 * Go to Definition from Jinja template usage to the corresponding Python definition when available;
@@ -51,7 +54,7 @@ For example, if a template uses:
 <p>{{ config.site_name }}</p>
 ```
 
-but the Python rendering call only provides user, OmniJinja can report that config is required by the template but missing from the Python render context.
+but the Python rendering call only provides `user`, OmniJinja can report that `config` is required by the template but missing from the Python render context.
 Supported checks include:
 
 * Missing render-context variables, when a template uses a variable that Python does not pass;
@@ -61,6 +64,8 @@ Supported checks include:
 * Render-site diagnostics, where missing or incompatible template requirements can be reported near the related Python rendering call.
 
 This helps developers detect Python--Jinja data mismatches before running the application.
+
+todo：放上功能截图 就放在每一节的下面就可以了
 
 ### 3. Template-local Jinja Support
 
@@ -78,7 +83,24 @@ Supported features include:
 * Quick fixes for specific Jinja syntax errors;
 * Local ignore actions for suppressing specific warnings during the current editing session.
 
+#### Supported Jinja Syntax Diagnostics and Fixes
+
+OmniJinja uses a rule-based checker for common structural Jinja syntax issues.
+
+| Rule | Diagnostic Category | Examples | Quick Fix |
+|---|---|---|---|
+| Rule 1 | Nested delimiters | `{% if {{ user }} %}`, `{{ {{ user }} }}` | Yes |
+| Rule 2 | Delimiter and block matching errors | unclosed `{{`, mismatched `{% if %}` / `{% endfor %}`, missing `{% endif %}` | Yes |
+| Rule 3 | Invalid property access syntax | `user->name`, `user..name`, `user.` | Yes |
+| Rule 4 | Incorrect `extends` usage | `{% extends %}` not at the top, duplicate `{% extends %}` tags | Yes |
+| Rule 5 | Jinja code inside HTML comments | `<!-- {{ user.name }} -->` | No |
+
+Rule 5 is reported as a warning because Jinja code inside HTML comments may still be executed by the template engine. OmniJinja reports this pattern but does not automatically rewrite it, since the intended behavior may depend on the developer.
+
+
+
 Together, these features provide both language-level Jinja support and cross-file Python--Jinja consistency checking inside VS Code.
+
 
 
 
