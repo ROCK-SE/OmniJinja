@@ -1,65 +1,154 @@
 # OmniJinja
-**An Omni VSCode Extension for the Jinja Template Engine.**
 
-OmniJinja goes far beyond standard syntax highlighting. It acts as an intelligent bridge between your Python backend (like Flask) and your frontend Jinja2/HTML templates. 
+**OmniJinja** is a VS Code extension for Python/Jinja development.  
+It connects Python backend code with Jinja templates and provides editor support beyond basic syntax highlighting.
 
-Powered by a background analysis engine, it deeply understands your custom context variables, filters, macros, and data flow etc.
+OmniJinja is designed for Python projects that render Jinja templates through framework APIs such as Flask's `render_template(...)` or through native Jinja2 APIs such as `Environment.get_template(...).render(...)`. It analyzes both sides of the Python--Jinja boundary:
 
----
+- the **Python side**, where template paths, render-context variables, object properties, and custom filters are supplied;
+- the **Jinja side**, where templates use placeholders, attribute accesses, loops, calls, filters, macros, and template-local variables.
+
+The result is a more context-aware editing experience for Jinja templates and earlier feedback on Python/Jinja inconsistencies.
+
 
 ## Key Features
 
-### Cross-File Data Flow Validation
-OmniJinja analyzes the "Supply" from your Python files and the "Demand" from your templates. It provides real-time diagnostics (squiggly lines) in both your Python and HTML files if:
-* You forget to pass a required variable in `render_template`.
-* You iterate over a variable in Jinja that isn't actually an Iterable in Python.
-* You attempt to call a variable as a function when it isn't callable.
+OmniJinja provides editor support from three complementary perspectives: **Python-to-Template assistance**, **Template-to-Python validation**, and **Template-local Jinja support**.
 
-### Automated Quick Fixes & Silent Ignores
-* **Auto-Fix**: Detects structural Jinja syntax errors and provides a one-click Quick Fix to repair the template code automatically.
-* **Silent Ignore**: Annoyed by a specific warning? Use the Quick Fix menu to "Ignore this warning (Locally)". The warning will vanish instantly.
+### 1. Python-to-Template Assistance
 
-### Intelligent Auto-Completion
-Context-aware IntelliSense that activates when you type `{{`, `{%`, `|`, or `.`:
-* **Context Variables**: Auto-completes properties of objects passed directly from your Python backend.
-* **Built-ins & Custom Filters**: Full support for Jinja built-in tags, filters, tests, and globals. It even auto-completes **custom filters** defined in your Python source code!
-* **Template Paths**: Auto-completes file paths when using `{% extends ... %}` or `{% include ... %}`.
+OmniJinja analyzes Python rendering code and uses the extracted backend information to assist Jinja template editing.
 
-### Rich Hover Docs & Signature Help
-* **Hover**: Hover over any Jinja variable, custom filter, or built-in tag to see its Python type, signature, and Markdown-formatted docstring.
-* **Signature Help**: When calling a macro or custom filter (e.g., `{{ user.get_avatar(|) }}`), OmniJinja displays real-time parameter hints just like a standard programming language.
+When Python code passes data to a template, for example:
 
-### Go-To Definition
-Navigate massive codebases with ease. **Ctrl+Click** (or **Cmd+Click**) on a context variable or custom filter in your Jinja template to instantly jump to its exact definition line in your Python source code.
+```python
+return render_template(
+    "index.html",
+    user=user_obj,
+    show_stats=True,
+)
+```
+OmniJinja can use this render context to provide template-side editor features.
+Supported features include:
 
----
+* Placeholder completion for variables passed from Python, such as user and `show_stats`;
+* Property completion for inferred object fields, such as `user.name` or `user.profile.avatar`;
+* Custom filter completion for filters registered in Python;
+* Template path completion for {% extends %} and {% include %};
+* Hover information for Python-backed variables, properties, methods, and filters;
+* Signature help for callable objects, methods, macros, and filters;
+* Go to Definition from Jinja template usage to the corresponding Python definition when available;
+* Backend-informed template diagnostics for issues such as undefined variable, missing attributes, incompatible loop targets, and unregistered filters.
+
+This means OmniJinja completion is not only based on Jinja syntax. It is driven by information extracted from the Python render context.
+
+### 2. Template-to-Python Validation
+OmniJinja also supports a template-first workflow. When a developer writes a Jinja template before completing the Python rendering code, OmniJinja extracts the data requirements of the template and checks whether the Python render context satisfies them.
+
+For example, if a template uses:
+```html
+<h1>{{ user.name }}</h1>
+<p>{{ config.site_name }}</p>
+```
+
+but the Python rendering call only provides user, OmniJinja can report that config is required by the template but missing from the Python render context.
+Supported checks include:
+
+* Missing render-context variables, when a template uses a variable that Python does not pass;
+* Missing attributes, when a template accesses a field that is not found in the inferred Python object structure;
+* Non-iterable loop targets, when a template iterates over a value that is not inferred as iterable;
+* Non-callable call targets, when a template calls a value that is not inferred as callable;
+* Render-site diagnostics, where missing or incompatible template requirements can be reported near the related Python rendering call.
+
+This helps developers detect Python--Jinja data mismatches before running the application.
+
+### 3. Template-local Jinja Support
+
+OmniJinja also provides Jinja editing support that does not depend on Python backend information. These features improve local template writing, syntax checking, and repair.
+
+Supported features include:
+
+* Jinja syntax highlighting;
+* Delimiter completion for`{{ }}`, `{% %}`, and `{# #}`;
+* Built-in tag and filter completion;
+* Tag snippet completion for common Jinja control structures;
+* Macro and block support;
+* Template-local variable scope handling for variables introduced by for, set, and macros;
+* Jinja syntax diagnostics for specific syntax errors;（下面加上支持哪些语法错误修复）
+* Quick fixes for specific Jinja syntax errors;
+* Local ignore actions for suppressing specific warnings during the current editing session.
+
+Together, these features provide both language-level Jinja support and cross-file Python--Jinja consistency checking inside VS Code.
+
+
 
 ## Requirements
 
-OmniJinja runs a lightweight Python analysis engine in the background. To use this extension, you must meet the following requirement:
+OmniJinja requires a Python environment.
 
-**Python Environment**: Python must be installed on your system. The extension will automatically attempt to use `python3` or `python` from your system's PATH.
+The extension attempts to use one of the following commands from your system PATH:
+``` bash
+python3
+python
+```
+For best results, open VS Code at the root of your Python/Jinja project so that OmniJinja can locate Python files, template files, and template folders correctly.
 
----
+## Supported Files
+
+OmniJinja activates for the following file types:
+
+* `.py`
+* `.html`
+* `.jinja`
+* `.jinja2`
+* `.j2`
 
 ## Usage
 
-OmniJinja activates automatically when you open any of the following file types:
-* `.py`
-* `.html`
-* `.jinja`, `.jinja2`, `.j2`
+* Open a Python/Jinja project in VS Code.
+* Make sure Python is available in your system PATH.
+* Open a Python file or Jinja template.
+* Start editing your template.
 
-Simply open a workspace containing your Python backend and template files. OmniJinja will briefly scan your files in the background to build its intelligent context registry. 
+Try the following interactions:
 
-Start typing `{{` or `{%` in your templates, or hover over a variable, to see the magic happen!
-
----
+* type `{{` to trigger placeholder completion;
+* type `.` after a Python-backed variable to trigger property completion;
+* type `|` to trigger filter completion;
+* type `{%` to trigger Jinja tag completion;
+* hover over a variable or filter to inspect available information;
+* use `Ctrl+Click` or `Cmd+Click` to navigate to a Python definition when available;
+* check the Problems panel for Python--Jinja diagnostics;
+* use the Quick Fix menu for supported Jinja syntax repairs.
 
 ## Known Issues
 
-* **Silent Ignore Persistence**: Currently, diagnostics ignored via the "Ignore Locally" quick-fix are stored in memory and will reappear if you restart the VS Code window.
-* **Initial Scan Delay**: For extremely large projects with hundreds of complex Python files, the initial workspace scan upon activation might take a few seconds.
+OmniJinja uses static analysis, so some dynamic Python behavior may not be fully recovered.
 
----
+Current limitations include:
+* dynamically generated template paths may not always be resolved;
+* attributes created through complex runtime behavior may be missed;
+* diagnostics for dynamic objects may be conservative;
+* very large projects may take a few seconds during the initial analysis;
+* locally ignored diagnostics are currently not persisted across VS Code reloads.
+
+### Feedback and Issues
+
+Bug reports, feature requests, and examples of unsupported Python/Jinja patterns are welcome.
+When reporting an issue, please include:
+* a minimal Python/Jinja example;
+* the expected behavior;
+* the actual behavior;
+* your Python version;
+* your VS Code version;
+* the OmniJinja version.
+  
+### License
+
+
+### Acknowledgments
+
+OmniJinja is built for developers who work across Python backend code and Jinja templates and want earlier feedback directly inside the editor.
+
 
 **Enjoy building with Jinja!** 
