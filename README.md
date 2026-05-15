@@ -35,20 +35,20 @@ OmniJinja can use this render context to provide template-side editor features.
 Supported features include:
 
 * Placeholder completion for variables passed from Python, such as `user` and `show_stats`;
-  ![placeholder completion](images/placeholder.png)
+  ![placeholder completion](image/placeholder.png)
 * Property completion for inferred object fields, such as `user.name` or `user.profile.avatar`;
-  ![property completion](images/property.png)
+  ![property completion](image/property.png)
 * Custom filter completion for filters registered in Python;
-  ![custom filter completion](images/custom_filter.png)
+  ![custom filter completion](image/custom_filter.png)
 * Template path completion for `{% extends %}` and `{% include %}`;
-  ![template path completion](images/template_path.png)
+  ![template path completion](image/template_path.png)
 * Hover information for Python-backed variables, properties, methods, and filters;
-  ![hover](images/hover.png)
-  ![hover_data](images/hover_data.png)
+  ![hover](image/hover.png)
+  ![hover_data](image/hover_data.png)
 * Signature help for callable objects, methods, macros, and filters;
 * Go to Definition from Jinja template usage to the corresponding Python definition when available;
 * Backend-informed template diagnostics for issues such as undefined variable, missing attributes, incompatible loop targets, and unregistered filters.
-  ![template_check](images/template_check.png)
+  ![template_check](image/template_check.png)
 
 This means OmniJinja completion is not only based on Jinja syntax. It is driven by information extracted from the Python render context.
 
@@ -72,7 +72,7 @@ Supported checks include:
 
 This helps developers detect Python--Jinja data mismatches before running the application.
 
-![python check](images/python_check.png)
+![python check](image/python_check.png)
 
 ### 3. Template-local Jinja Support
 
@@ -89,7 +89,7 @@ Supported features include:
 * Jinja syntax diagnostics for specific syntax errors;
 * Quick fixes for specific Jinja syntax errors;
 * Local ignore actions for suppressing specific warnings during the current editing session.
-![qucik fix](images/quick_fix.png)
+![qucik fix](image/quick_fix.png)
 
 #### Supported Jinja Syntax Diagnostics and Fixes
 
