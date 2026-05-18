@@ -2,8 +2,9 @@
   "name": "omnijinja",
   "displayName": "OmniJinja",
   "description": "An Omni VSCode Extension for the Jinja Template Engine",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "rock-se",
+  "icon": "image/logo.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/ROCK-SE/OmniJinja.git"
