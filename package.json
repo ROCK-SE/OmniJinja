@@ -2,7 +2,7 @@
   "name": "omnijinja",
   "displayName": "OmniJinja",
   "description": "An Omni VSCode Extension for the Jinja Template Engine",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "rock-se",
   "icon": "image/logo.png",
   "repository": {
@@ -76,7 +76,7 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.110.0",
+    "@types/vscode": "^1.90.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "typescript-eslint": "^8.56.1",
