@@ -60,6 +60,11 @@ const fixedCodeRegistry = new Map<string, string>();
 // Cache to store unique identifiers for ignored diagnostics
 const ignoredDiagnosticsCache = new Set<string>();
 
+/** * Caches template dependencies (extends, includes, imports) to build inheritance trees.
+ * Map structure: Template Name -> { extends?: string, includes?: string[], imports?: any[] }
+ */
+const templateDependenciesRegistry = new Map<string, any>();
+
 // Background task queues and debounce timers for performance optimization
 const debounceTimers = new Map<string, NodeJS.Timeout>();
 const parseQueue: string[] = [];
@@ -343,6 +348,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         diagnosticCollection.delete(uri); 
         internalJinjaRegistry.delete(templateKey);
+        templateDependenciesRegistry.delete(templateKey);
         fixedCodeRegistry.delete(deletedHtmlPath);
         externalRequirementsRegistry.delete(templateKey); 
 
@@ -351,52 +357,114 @@ export async function activate(context: vscode.ExtensionContext) {
     });
 
     // ==========================================
-    // Unified Context Builder
+    // Unified Context Builder (Recursive Dependency Resolver)
     // ==========================================
 
     function buildStrictContext(document: vscode.TextDocument, position: vscode.Position) {
         const currentHtmlName = getTemplateKey(document.fileName);
         const mergedContext: any = {};
-        
-        // 1. Python Global Variables (Always visible)
-        const pySourcesMap = templateRegistry.get(currentHtmlName);
-        if (pySourcesMap) {
-            for (const ctx of pySourcesMap.values()) Object.assign(mergedContext, ctx); 
-        }
-        
-        // 2. Strict Spatial & Line Filtering
-        const internalCtx = internalJinjaRegistry.get(currentHtmlName);
-        if (internalCtx) {
-            const activeLine = position.line + 1; // Translate to 1-based indexing
+        const activeLine = position.line + 1; 
 
-            // A. Globals (e.g., {% set %}) -> Must be defined BEFORE active line
-            if (internalCtx.globals) {
-                for (const [varName, varInfo] of Object.entries(internalCtx.globals)) {
-                    const defLine = (varInfo as any).def_line || 0;
-                    if (activeLine >= defLine) {
-                        mergedContext[varName] = varInfo;
+        const visitedTemplates = new Set<string>();
+
+        function mergeContextRecursively(templateName: string, isRoot: boolean) {
+            if (visitedTemplates.has(templateName)) return;
+            visitedTemplates.add(templateName);
+
+            const getTemplateExports = (tplName: string) => {
+                const exports: any = {};
+                const internal = internalJinjaRegistry.get(tplName);
+                if (internal) {
+                    for (const key in internal) {
+                        if (key !== 'globals' && key !== 'scoped' && key !== 'dependencies') {
+                            exports[key] = internal[key];
+                        }
+                    }
+                    if (internal.globals) {
+                        for (const key in internal.globals) {
+                            exports[key] = internal.globals[key];
+                        }
+                    }
+                }
+                return exports;
+            };
+
+            const deps = templateDependenciesRegistry.get(templateName);
+            if (deps) {
+                // {% extends '...' %}
+                if (deps.extends) {
+                    mergeContextRecursively(deps.extends, false);
+                }
+                // {% include '...' %}
+                if (deps.includes) {
+                    for (const inc of deps.includes) {
+                        mergeContextRecursively(inc, false);
+                    }
+                }
+                // {% import ... %} 和 {% from ... import ... %}
+                if (deps.imports) {
+                    for (const imp of deps.imports) {
+                        const targetTpl = imp.template;
+                        const exportedSymbols = getTemplateExports(targetTpl);
+
+                        if (imp.type === 'import' && imp.namespace) {
+                            mergedContext[imp.namespace] = {
+                                __type__: "Module",
+                                __is_iterable__: false,
+                                ...exportedSymbols
+                            };
+                        } else if (imp.type === 'from_import' && imp.names) {
+                            for (const [originalName, alias] of Object.entries(imp.names)) {
+                                if (exportedSymbols[originalName]) {
+                                    mergedContext[alias as string] = exportedSymbols[originalName];
+                                } else {
+                                    mergedContext[alias as string] = { __type__: "Macro/Any" };
+                                }
+                            }
+                        }
                     }
                 }
             }
-            
-            // B. Scoped (e.g., {% for %}) -> Must be WITHIN start and end bounds
-            if (internalCtx.scoped) {
-                for (const scope of internalCtx.scoped) {
-                    if (activeLine >= scope.scope_range.start_line && activeLine <= scope.scope_range.end_line) {
-                        Object.assign(mergedContext, scope.vars);
+
+            const pySourcesMap = templateRegistry.get(templateName);
+            if (pySourcesMap) {
+                for (const ctx of pySourcesMap.values()) Object.assign(mergedContext, ctx); 
+            }
+
+            const internalCtx = internalJinjaRegistry.get(templateName);
+            if (internalCtx) {
+                // A. Globals (e.g., {% set %})
+                if (internalCtx.globals) {
+                    for (const [varName, varInfo] of Object.entries(internalCtx.globals)) {
+                        const defLine = (varInfo as any).def_line || 0;
+                        if (!isRoot || activeLine >= defLine) {
+                            mergedContext[varName] = varInfo;
+                        }
                     }
                 }
-            }
-            
-            // C. Macros (Hoisted, always visible)
-            for (const key in internalCtx) {
-                if (key !== 'globals' && key !== 'scoped') {
-                    mergedContext[key] = internalCtx[key];
+                
+                // B. Scoped (e.g., {% for %})
+                if (isRoot && internalCtx.scoped) {
+                    for (const scope of internalCtx.scoped) {
+                        if (activeLine >= scope.scope_range.start_line && activeLine <= scope.scope_range.end_line) {
+                            Object.assign(mergedContext, scope.vars);
+                        }
+                    }
+                }
+                
+                // C. Macros 
+                for (const key in internalCtx) {
+                    if (key !== 'globals' && key !== 'scoped' && key !== 'dependencies') {
+                        mergedContext[key] = internalCtx[key];
+                    }
                 }
             }
         }
+
+        mergeContextRecursively(currentHtmlName, true);
         return mergedContext;
     }
+
 
     // ==========================================
     // Language Server Providers Registration
@@ -1038,7 +1106,16 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string) 
         const internalData: any = {};
         if (data.internal_variables) {
             Object.assign(internalData, data.internal_variables);
+            
+            if (data.internal_variables.dependencies) {
+                templateDependenciesRegistry.set(templateKey, data.internal_variables.dependencies);
+            } else {
+                templateDependenciesRegistry.delete(templateKey);
+            }
+        } else {
+            templateDependenciesRegistry.delete(templateKey);
         }
+        
         if (data.macros) {
             Object.assign(internalData, data.macros);
         }

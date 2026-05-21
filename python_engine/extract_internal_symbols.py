@@ -127,10 +127,10 @@ class JinjaSymbolExtractor(NodeVisitor):
     def _regex_fallback(self, template_code: str):
         """
         Regex-based recovery for incomplete or invalid ASTs.
-        Ensures variables are still detected while the user is typing (e.g., unclosed tags).
+        Ensures variables and dependencies are preserved when typing invalid syntax (e.g., {{  }}).
         """
         
-        set_pattern = re.compile(r'\{%\s*set\s+([a-zA-Z0-9_]+)\s*=\s*([a-zA-Z0-9_.]+)')
+        set_pattern = re.compile(r'\{%-?\s*set\s+([a-zA-Z0-9_]+)\s*=\s*([a-zA-Z0-9_.]+)')
         for match in set_pattern.finditer(template_code):
             var_name, path_str = match.groups()
             schema = self._resolve_schema(path_str.split('.'))
@@ -141,12 +141,11 @@ class JinjaSymbolExtractor(NodeVisitor):
             self.extracted_data["globals"][var_name] = schema
             self.scope_stack[0][var_name] = schema
             
-        for_pattern = re.compile(r'\{%\s*for\s+([a-zA-Z0-9_]+)\s+in\s+([a-zA-Z0-9_.]+)')
+        for_pattern = re.compile(r'\{%-?\s*for\s+([a-zA-Z0-9_]+)\s+in\s+([a-zA-Z0-9_.]+)')
         for match in for_pattern.finditer(template_code):
             var_name, path_str = match.groups()
             iter_data = self._resolve_schema(path_str.split('.'), is_iterable=True)
             
-            # Calculate approx start line for fallback
             start_line = template_code[:match.start()].count('\n') + 1
             
             scoped_vars = {
@@ -154,15 +153,8 @@ class JinjaSymbolExtractor(NodeVisitor):
                 "loop": self.LOOP_PROPERTIES
             }
             
-            # # Without closing tag, assume scope ends at EOF (999999)
-            # self.extracted_data["scoped"].append({
-            #     "type": "for_fallback",
-            #     "scope_range": {"start_line": start_line, "end_line": 999999},
-            #     "vars": scoped_vars
-            # })
-            
             text_after_for = template_code[match.end():]
-            endfor_match = re.search(r'\{%\s*endfor\s*%\}', text_after_for)
+            endfor_match = re.search(r'\{%-?\s*endfor\s*-?%\}', text_after_for)
             
             if endfor_match:
                 lines_between = text_after_for[:endfor_match.end()].count('\n')
@@ -176,6 +168,78 @@ class JinjaSymbolExtractor(NodeVisitor):
                 "vars": scoped_vars
             })
 
+        def _ensure_deps_fallback():
+            if "dependencies" not in self.extracted_data:
+                self.extracted_data["dependencies"] = {}
+
+        extends_match = re.search(r'\{%-?\s*extends\s*[\'"]([^\'"]+)[\'"]\s*-?%\}', template_code)
+        if extends_match:
+            _ensure_deps_fallback()
+            self.extracted_data["dependencies"]["extends"] = extends_match.group(1)
+
+        include_pattern = re.compile(r'\{%-?\s*include\s*[\'"]([^\'"]+)[\'"]\s*-?%\}')
+        includes = [m.group(1) for m in include_pattern.finditer(template_code)]
+        if includes:
+            _ensure_deps_fallback()
+            if "includes" not in self.extracted_data["dependencies"]:
+                self.extracted_data["dependencies"]["includes"] = []
+            self.extracted_data["dependencies"]["includes"].extend(includes)
+
+        import_pattern = re.compile(r'\{%-?\s*import\s*[\'"]([^\'"]+)[\'"]\s+as\s+([a-zA-Z0-9_]+)\s*-?%\}')
+        for match in import_pattern.finditer(template_code):
+            _ensure_deps_fallback()
+            if "imports" not in self.extracted_data["dependencies"]:
+                self.extracted_data["dependencies"]["imports"] = []
+            self.extracted_data["dependencies"]["imports"].append({
+                "type": "import",
+                "template": match.group(1),
+                "namespace": match.group(2)
+            })
+
+        from_import_pattern = re.compile(r'\{%-?\s*from\s*[\'"]([^\'"]+)[\'"]\s+import\s+(.+?)\s*-?%\}')
+        for match in from_import_pattern.finditer(template_code):
+            _ensure_deps_fallback()
+            if "imports" not in self.extracted_data["dependencies"]:
+                self.extracted_data["dependencies"]["imports"] = []
+                
+            template_name = match.group(1)
+            names_str = match.group(2)
+            
+            names_dict = {}
+            for part in names_str.split(','):
+                part = part.strip()
+                if ' as ' in part:
+                    orig, alias = part.split(' as ', 1)
+                    names_dict[orig.strip()] = alias.strip()
+                elif part:
+                    names_dict[part] = part
+                    
+            self.extracted_data["dependencies"]["imports"].append({
+                "type": "from_import",
+                "template": template_name,
+                "names": names_dict
+            })
+        
+        macro_pattern = re.compile(r'\{%-?\s*macro\s+([a-zA-Z0-9_]+)\s*\((.*?)\)\s*-?%\}')
+        for match in macro_pattern.finditer(template_code):
+            macro_name = match.group(1)
+            args_str = match.group(2).strip()
+            
+            args_list = []
+            if args_str:
+                for arg in args_str.split(','):
+                    clean_arg = arg.split('=')[0].strip()
+                    if clean_arg:
+                        args_list.append(clean_arg)
+                        
+            self.extracted_data[macro_name] = {
+                "__type__": "Macro",
+                "signature": f"{macro_name}({args_str})",
+                "args": args_list,
+                "docstring": "Macro (Fallback)",
+                "def_line": template_code[:match.start()].count('\n') + 1
+            }
+
     def extract(self, template_code: str) -> dict:
         try:
             ast_tree = Environment().parse(template_code)
@@ -185,3 +249,51 @@ class JinjaSymbolExtractor(NodeVisitor):
             
         # Return the new structured dict containing globals and spatial scopes
         return self.extracted_data
+    
+    def _ensure_dependencies(self):
+        if "dependencies" not in self.extracted_data:
+            self.extracted_data["dependencies"] = {}
+
+    def visit_Extends(self, node: nodes.Extends):
+        if isinstance(node.template, nodes.Const):
+            self._ensure_dependencies()
+            self.extracted_data["dependencies"]["extends"] = node.template.value
+        self.generic_visit(node)
+
+    def visit_Include(self, node: nodes.Include):
+        if isinstance(node.template, nodes.Const):
+            self._ensure_dependencies()
+            if "includes" not in self.extracted_data["dependencies"]:
+                self.extracted_data["dependencies"]["includes"] = []
+            self.extracted_data["dependencies"]["includes"].append(node.template.value)
+        self.generic_visit(node)
+
+    def visit_Import(self, node: nodes.Import):
+        if isinstance(node.template, nodes.Const):
+            self._ensure_dependencies()
+            if "imports" not in self.extracted_data["dependencies"]:
+                self.extracted_data["dependencies"]["imports"] = []
+                
+            self.extracted_data["dependencies"]["imports"].append({
+                "type": "import",
+                "template": node.template.value,
+                "namespace": node.target
+            })
+        self.generic_visit(node)
+
+    def visit_FromImport(self, node: nodes.FromImport):
+        if isinstance(node.template, nodes.Const):
+            self._ensure_dependencies()
+            if "imports" not in self.extracted_data["dependencies"]:
+                self.extracted_data["dependencies"]["imports"] = []
+            
+            names_dict = {}
+            for name, alias in node.names:
+                names_dict[name] = alias if alias else name
+                
+            self.extracted_data["dependencies"]["imports"].append({
+                "type": "from_import",
+                "template": node.template.value,
+                "names": names_dict
+            })
+        self.generic_visit(node)
