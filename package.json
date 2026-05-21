@@ -10,7 +10,7 @@
     "url": "https://github.com/ROCK-SE/OmniJinja.git"
   },
   "engines": {
-    "vscode": "^1.110.0"
+    "vscode": "^1.90.0"
   },
   "categories": [
     "Programming Languages",
