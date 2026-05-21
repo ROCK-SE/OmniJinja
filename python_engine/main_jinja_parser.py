@@ -35,7 +35,7 @@ def get_merged_backend_schema(output_schemas_dir, target_template_name):
                     
                     if "render_calls" in data:
                         for call in data["render_calls"]:
-                            call_template_name = os.path.basename(call.get("template", ""))
+                            call_template_name = call.get("template", "").replace('\\', '/')
                             if call_template_name == target_template_name:
                                 merged_schema.update(call.get("context", {}))
                                 
@@ -65,8 +65,13 @@ def main():
     template_path = sys.argv[1]
     workspace_root = sys.argv[2]
     
-    target_template_name = os.path.basename(template_path)
-    output_schemas_dir = os.path.join(workspace_root, "output_schemas")
+    normalized_path = template_path.replace('\\', '/')
+    if "/templates/" in normalized_path:
+        target_template_name = normalized_path.split("/templates/")[-1]
+    else:
+        target_template_name = os.path.basename(template_path)
+    
+    output_schemas_dir = os.path.join(workspace_root, "backend_schemas")
     jinja_schemas_dir = os.path.join(workspace_root, "jinja_schemas")
     
     backend_schema, custom_filters = get_merged_backend_schema(output_schemas_dir, target_template_name)    
@@ -153,12 +158,17 @@ def main():
         "fixed_code": fixed_code 
     }
     
-    base_name = os.path.basename(template_path)
-    output_filename = os.path.join(jinja_schemas_dir, f"{base_name}_jinja.json")
+    try:
+        rel_path = os.path.relpath(template_path, workspace_root)
+        safe_name = rel_path.replace(os.sep, '_').replace('/', '_')
+    except Exception:
+        safe_name = os.path.basename(template_path)
+        
+    output_filename = os.path.join(jinja_schemas_dir, f"{safe_name}_jinja.json")
     
     os.makedirs(jinja_schemas_dir, exist_ok=True)
     with open(output_filename, 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=4, ensure_ascii=False)
-
+        
 if __name__ == "__main__":
     main()

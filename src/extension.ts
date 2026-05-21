@@ -70,6 +70,25 @@ let isJinjaParsing = false;
 /** Collection to manage and render wavy underlines for syntax errors and warnings */
 let diagnosticCollection: vscode.DiagnosticCollection;
 
+
+
+function getTemplateKey(absolutePath: string): string {
+    const normalized = absolutePath.replace(/\\/g, '/');
+    const match = normalized.match(/\/templates\/(.+)$/);
+    return match ? match[1] : path.basename(absolutePath);
+}
+
+function getSafePyName(absolutePath: string, workspaceRoot: string): string {
+    const relative = path.relative(workspaceRoot, absolutePath);
+    return relative.replace(/\\/g, '_').replace(/\//g, '_') + "_schema.json";
+}
+
+function getSafeJinjaName(absolutePath: string, workspaceRoot: string): string {
+    const relative = path.relative(workspaceRoot, absolutePath);
+    return relative.replace(/\\/g, '_').replace(/\//g, '_') + "_jinja.json";
+}
+
+
 /**
  * Formats a variable's internal schema into a human-readable type string for the UI.
  * * @param val - The variable schema object extracted by the Python backend.
@@ -301,8 +320,8 @@ export async function activate(context: vscode.ExtensionContext) {
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.py');
     watcher.onDidDelete((uri) => {
         const deletedPyPath = uri.fsPath;
-        const safeName = path.basename(deletedPyPath) + "_schema.json";
-        const jsonPath = path.join(workspaceRoot, 'output_schemas', safeName);
+        const safeName = getSafePyName(deletedPyPath, workspaceRoot);
+        const jsonPath = path.join(workspaceRoot, 'backend_schemas', safeName);
         if (fs.existsSync(jsonPath)) fs.unlinkSync(jsonPath);
 
         for (const [templateName, sourceMap] of templateRegistry.entries()) {
@@ -319,18 +338,16 @@ export async function activate(context: vscode.ExtensionContext) {
     
     htmlWatcher.onDidDelete((uri) => {
         const deletedHtmlPath = uri.fsPath;
-        const baseName = path.basename(deletedHtmlPath);
+        const templateKey = getTemplateKey(deletedHtmlPath);
+        const safeName = getSafeJinjaName(deletedHtmlPath, workspaceRoot);
 
         diagnosticCollection.delete(uri); 
-        internalJinjaRegistry.delete(baseName);
+        internalJinjaRegistry.delete(templateKey);
         fixedCodeRegistry.delete(deletedHtmlPath);
-        externalRequirementsRegistry.delete(baseName); 
+        externalRequirementsRegistry.delete(templateKey); 
 
-        const safeName = baseName + "_jinja.json";
         const jsonPath = path.join(workspaceRoot, 'jinja_schemas', safeName);
-        if (fs.existsSync(jsonPath)) {
-            fs.unlinkSync(jsonPath);
-        }
+        if (fs.existsSync(jsonPath)) fs.unlinkSync(jsonPath);
     });
 
     // ==========================================
@@ -338,7 +355,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // ==========================================
 
     function buildStrictContext(document: vscode.TextDocument, position: vscode.Position) {
-        const currentHtmlName = path.basename(document.fileName);
+        const currentHtmlName = getTemplateKey(document.fileName);
         const mergedContext: any = {};
         
         // 1. Python Global Variables (Always visible)
@@ -755,7 +772,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 }
 
                 // Look up definitions for Context Variables
-                const currentHtmlName = path.basename(document.fileName);
+                const currentHtmlName = getTemplateKey(document.fileName);
                 const pySourcesMap = templateRegistry.get(currentHtmlName);
                 if (pySourcesMap) {
                     for (const [pyPath, contextData] of pySourcesMap.entries()) {
@@ -916,9 +933,8 @@ async function processJinjaQueue(enginePath: string, workspaceRoot: string) {
  * Reads the generated _schema.json file and updates the in-memory registries.
  */
 function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string, enginePath: string) {
-    const baseName = path.basename(pyFilePath);
-    const safeName = baseName + "_schema.json";
-    const jsonPath = path.join(workspaceRoot, 'output_schemas', safeName);
+    const safeName = getSafePyName(pyFilePath, workspaceRoot);
+    const jsonPath = path.join(workspaceRoot, 'backend_schemas', safeName);
 
     if (!fs.existsSync(jsonPath)) return;
 
@@ -930,8 +946,8 @@ function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string, engineP
         const oldCalls = renderCallRegistry.get(pyFilePath);
         if (oldCalls) {
             for (const oldCall of oldCalls) {
-                const oldTemplateName = path.basename(oldCall.template);
-                affectedTemplates.add(oldTemplateName); 
+                const oldTemplateName = oldCall.template.replace(/\\/g, '/');
+                affectedTemplates.add(oldTemplateName);
 
                 const sourceMap = templateRegistry.get(oldTemplateName);
                 if (sourceMap && sourceMap.has(pyFilePath)) {
@@ -945,7 +961,7 @@ function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string, engineP
             renderCallRegistry.set(pyFilePath, schemaData.render_calls);
 
             for (const call of schemaData.render_calls) {
-                const templateName = path.basename(call.template);
+                const templateName = call.template.replace(/\\/g, '/');
                 affectedTemplates.add(templateName); 
 
                 if (!templateRegistry.has(templateName)) {
@@ -999,9 +1015,10 @@ function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string, engineP
  * @param workspaceRoot - The root path of the current workspace.
  */
 function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string) {
-    const baseName = path.basename(htmlFilePath);
-    const safeName = baseName + "_jinja.json"; 
+    const templateKey = getTemplateKey(htmlFilePath); 
+    const safeName = getSafeJinjaName(htmlFilePath, workspaceRoot); 
     const jsonPath = path.join(workspaceRoot, 'jinja_schemas', safeName);
+
     const uri = vscode.Uri.file(htmlFilePath);
 
     // 1. Check if diagnostics are globally enabled in settings
@@ -1025,7 +1042,7 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string) 
         if (data.macros) {
             Object.assign(internalData, data.macros);
         }
-        internalJinjaRegistry.set(baseName, internalData);
+        internalJinjaRegistry.set(templateKey, internalData);
 
         // 3. Cache the repaired code for the Quick Fix (Lightbulb) feature
         if (data.fixed_code) {
@@ -1036,17 +1053,17 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string) 
 
         // 4. Update External Requirements (Demand) and trigger cross-file validation
         if (data.external_requirements) {
-            externalRequirementsRegistry.set(baseName, data.external_requirements);
+            externalRequirementsRegistry.set(templateKey, data.external_requirements);
             
             // Re-validate all Python files that supply variables to this specific template
-            const pySourcesMap = templateRegistry.get(baseName);
+            const pySourcesMap = templateRegistry.get(templateKey);
             if (pySourcesMap) {
                 for (const pyPath of pySourcesMap.keys()) {
                     validateDataFlow(pyPath);
                 }
             }
         } else {
-            externalRequirementsRegistry.delete(baseName);
+            externalRequirementsRegistry.delete(templateKey);
         }
 
         // 5. Process and render Diagnostics (Wavy Underlines)
@@ -1054,7 +1071,7 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string) 
             const diagnostics: vscode.Diagnostic[] = [];
             
             // Check if this template is currently linked to any Python backend logic
-            const isLinked = templateRegistry.has(baseName) && templateRegistry.get(baseName)!.size > 0;
+            const isLinked = templateRegistry.has(templateKey) && templateRegistry.get(templateKey)!.size > 0;
 
             for (const diag of data.diagnostics) {
                 const lineNum = Math.max(0, (diag.line || 1) - 1);
@@ -1101,7 +1118,7 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string) 
         }
 
     } catch (e) {
-        console.error(`OmniJinja: Failed to load Jinja JSON schema for ${baseName}`, e);
+        console.error(`OmniJinja: Failed to load Jinja JSON schema for ${templateKey}`, e);
     }
 }
 

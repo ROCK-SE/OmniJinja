@@ -91,11 +91,16 @@ def main():
     }
 
     # Ensure the output directory exists
-    output_dir = os.path.join(workspace_root, "output_schemas")
+    output_dir = os.path.join(workspace_root, "backend_schemas")
     os.makedirs(output_dir, exist_ok=True)
 
-    base_name = os.path.basename(target_py_file)
-    output_filepath = os.path.join(output_dir, f"{base_name}_schema.json")
+    try:
+        rel_path = os.path.relpath(target_py_file, workspace_root)
+        safe_name = rel_path.replace(os.sep, '_').replace('/', '_')
+    except Exception:
+        safe_name = os.path.basename(target_py_file)
+        
+    output_filepath = os.path.join(output_dir, f"{safe_name}_schema.json")
 
     try:
         with open(output_filepath, 'w', encoding='utf-8') as f:
