@@ -105,7 +105,15 @@ OmniJinja uses a rule-based checker for common structural Jinja syntax issues.
 
 Rule 5 is reported as a warning because Jinja code inside HTML comments may still be executed by the template engine. OmniJinja reports this pattern but does not automatically rewrite it, since the intended behavior may depend on the developer.
 
+### 4. Cross-Template Dependency Tracking
+OmniJinja intelligently builds an inheritance and dependency tree across your Jinja files. It fully resolves multi-file scopes, providing seamless completions and validation across boundaries.
 
+* Inheritance (extends): When a child template extends a base template, OmniJinja automatically resolves and suggests global variables (e.g., {% set %}) and macros defined in the parent.
+![extends](https://github.com/ROCK-SE/OmniJinja/blob/main/image/extends.png)
+
+* Partials (include): When a template includes a component, OmniJinja ensures that variables provided by the Python backend to the parent view are correctly recognized inside the included "orphan" component.
+
+* Modules and Namespaces (import / from ... import): OmniJinja fully supports Jinja's macro importation syntax. If you {% import 'macros.html' as ui %}, typing ui. will trigger completions for all macros and global variables exported by macros.html.
 
 Together, these features provide both language-level Jinja support and cross-file Python--Jinja consistency checking inside VS Code.
 
