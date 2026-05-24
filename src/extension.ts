@@ -238,7 +238,12 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(pyDiagnosticCollection);
 
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
-    if (!workspaceRoot) return;
+    if (!workspaceRoot) {
+        vscode.window.showInformationMessage(
+            "OmniJinja: Please open a folder (workspace) to enable Python-Jinja data flow analysis."
+        );
+        return;
+    }
     const pythonEnginePath = path.join(context.extensionPath, 'python_engine');
 
     const supportedLanguages = ['html', 'jinja', 'jinja-html', 'jinja2'];
