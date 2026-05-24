@@ -58,12 +58,13 @@ def main():
     4. Perform structural checks (syntax rules -> Errors/Warnings) and calculate repairs.
     5. Export consolidated results to a JSON file.
     """
-    if len(sys.argv) < 3:
-        print("Usage: python main_jinja_parser.py <template_path> <workspace_root>")
+    if len(sys.argv) < 4:
+        print("Usage: python main_jinja_parser.py <template_path> <workspace_root> <storage_path>")
         return
 
     template_path = sys.argv[1]
     workspace_root = sys.argv[2]
+    storage_path = sys.argv[3]
     
     normalized_path = template_path.replace('\\', '/')
     if "/templates/" in normalized_path:
@@ -71,8 +72,8 @@ def main():
     else:
         target_template_name = os.path.basename(template_path)
     
-    output_schemas_dir = os.path.join(workspace_root, "backend_schemas")
-    jinja_schemas_dir = os.path.join(workspace_root, "jinja_schemas")
+    output_schemas_dir = os.path.join(storage_path, "backend_schemas")
+    jinja_schemas_dir = os.path.join(storage_path, "jinja_schemas")
     
     backend_schema, custom_filters = get_merged_backend_schema(output_schemas_dir, target_template_name)    
     

@@ -25,12 +25,13 @@ from custom_filter import CustomFilterExtractor
 
 def main():
 
-    if len(sys.argv) < 3:
-        print("Usage: python main_py_parser.py <target_py_file> <workspace_root>")
+    if len(sys.argv) < 4:
+        print("Usage: python main_py_parser.py <target_py_file> <workspace_root> <storage_path>")
         sys.exit(1)
 
     target_py_file = sys.argv[1]
     workspace_root = sys.argv[2]
+    storage_path = sys.argv[3]
 
     # Read the live source code directly from standard input memory stream
     source_code = sys.stdin.read()
@@ -91,7 +92,7 @@ def main():
     }
 
     # Ensure the output directory exists
-    output_dir = os.path.join(workspace_root, "backend_schemas")
+    output_dir = os.path.join(storage_path, "backend_schemas")
     os.makedirs(output_dir, exist_ok=True)
 
     try:

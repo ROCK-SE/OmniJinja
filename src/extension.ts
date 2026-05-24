@@ -244,6 +244,19 @@ export async function activate(context: vscode.ExtensionContext) {
         );
         return;
     }
+
+    let storagePath = context.storageUri?.fsPath;
+    if (!storagePath) {
+        // Fallback to global storage if workspace storage isn't available
+        storagePath = context.globalStorageUri.fsPath;
+    }
+
+    // Ensure our hidden schema directories exist before Python tries to write to them
+    const backendDir = path.join(storagePath, 'backend_schemas');
+    const jinjaDir = path.join(storagePath, 'jinja_schemas');
+    if (!fs.existsSync(backendDir)) fs.mkdirSync(backendDir, { recursive: true });
+    if (!fs.existsSync(jinjaDir)) fs.mkdirSync(jinjaDir, { recursive: true });
+
     const pythonEnginePath = path.join(context.extensionPath, 'python_engine');
 
     const supportedLanguages = ['html', 'jinja', 'jinja-html', 'jinja2'];
@@ -265,7 +278,7 @@ export async function activate(context: vscode.ExtensionContext) {
         const pyFiles = await vscode.workspace.findFiles('**/*.py', '**/{node_modules,.venv,venv}/**');
         
         for (const file of pyFiles) {
-            loadSchemaIntoMemory(file.fsPath, workspaceRoot, pythonEnginePath);
+            loadSchemaIntoMemory(file.fsPath, workspaceRoot, storagePath, pythonEnginePath);
         }
 
         const templatePatterns = ['**/*.html', '**/*.jinja', '**/*.j2', '**/*.jinja2'];
@@ -276,7 +289,7 @@ export async function activate(context: vscode.ExtensionContext) {
             const templateFiles = await vscode.workspace.findFiles(pattern, excludePattern);
             for (const file of templateFiles) {
                 allTemplateFiles.push(file);
-                loadJinjaSchemaIntoMemory(file.fsPath, workspaceRoot); 
+                loadJinjaSchemaIntoMemory(file.fsPath, workspaceRoot, storagePath); 
             }
         }
 
@@ -290,8 +303,8 @@ export async function activate(context: vscode.ExtensionContext) {
         for (const file of filesToParse) parseQueue.push(file.fsPath);
         for (const file of allTemplateFiles) jinjaParseQueue.push(file.fsPath);
 
-        processQueue(pythonEnginePath, workspaceRoot);
-        processJinjaQueue(pythonEnginePath, workspaceRoot);
+        processQueue(pythonEnginePath, workspaceRoot, storagePath);
+        processJinjaQueue(pythonEnginePath, workspaceRoot, storagePath);
     });
 
     // Real-time File Change Listeners for Instant Reprocessing
@@ -303,7 +316,7 @@ export async function activate(context: vscode.ExtensionContext) {
             debounceTimers.set(filePath, setTimeout(() => {
                 if (!parseQueue.includes(filePath)) {
                     parseQueue.push(filePath);
-                    processQueue(pythonEnginePath, workspaceRoot);
+                    processQueue(pythonEnginePath, workspaceRoot, storagePath);
                 }
                 debounceTimers.delete(filePath);
             }, 300));
@@ -319,7 +332,7 @@ export async function activate(context: vscode.ExtensionContext) {
             debounceTimers.set(filePath, setTimeout(() => {
                 if (!jinjaParseQueue.includes(filePath)) {
                     jinjaParseQueue.push(filePath);
-                    processJinjaQueue(pythonEnginePath, workspaceRoot);
+                    processJinjaQueue(pythonEnginePath, workspaceRoot, storagePath);
                 }
                 debounceTimers.delete(filePath);
             }, 300));
@@ -331,7 +344,7 @@ export async function activate(context: vscode.ExtensionContext) {
     watcher.onDidDelete((uri) => {
         const deletedPyPath = uri.fsPath;
         const safeName = getSafePyName(deletedPyPath, workspaceRoot);
-        const jsonPath = path.join(workspaceRoot, 'backend_schemas', safeName);
+        const jsonPath = path.join(storagePath, 'backend_schemas', safeName);
         if (fs.existsSync(jsonPath)) fs.unlinkSync(jsonPath);
 
         for (const [templateName, sourceMap] of templateRegistry.entries()) {
@@ -357,7 +370,7 @@ export async function activate(context: vscode.ExtensionContext) {
         fixedCodeRegistry.delete(deletedHtmlPath);
         externalRequirementsRegistry.delete(templateKey); 
 
-        const jsonPath = path.join(workspaceRoot, 'jinja_schemas', safeName);
+        const jsonPath = path.join(storagePath, 'jinja_schemas', safeName);
         if (fs.existsSync(jsonPath)) fs.unlinkSync(jsonPath);
     });
 
@@ -938,14 +951,14 @@ export async function activate(context: vscode.ExtensionContext) {
 /**
  * Triggers the Python parsing script asynchronously for queued .py files.
  */
-async function processQueue(enginePath: string, workspaceRoot: string) {
+async function processQueue(enginePath: string, workspaceRoot: string, storagePath: string) {
     if (isParsing || parseQueue.length === 0) return;
     isParsing = true;
 
     while (parseQueue.length > 0) {
         const filePath = parseQueue.shift()!; 
         const scriptPath = path.join(enginePath, 'main_py_parser.py');
-        const command = `${activePythonCmd} "${scriptPath}" "${filePath}" "${workspaceRoot}"`;
+        const command = `${activePythonCmd} "${scriptPath}" "${filePath}" "${workspaceRoot}" "${storagePath}"`;
 
         const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
         const content = doc ? doc.getText() : fs.readFileSync(filePath, 'utf-8');
@@ -961,7 +974,7 @@ async function processQueue(enginePath: string, workspaceRoot: string) {
                     child.stdin.end();
                 }
             });
-            loadSchemaIntoMemory(filePath, workspaceRoot, enginePath); 
+            loadSchemaIntoMemory(filePath, workspaceRoot, storagePath, enginePath); 
         } catch (e) {
             console.error(`Python Backend Parsing Error: ${filePath}`, e);
         }
@@ -972,14 +985,14 @@ async function processQueue(enginePath: string, workspaceRoot: string) {
 /**
  * Triggers the Jinja syntax detection script asynchronously for queued templates.
  */
-async function processJinjaQueue(enginePath: string, workspaceRoot: string) {
+async function processJinjaQueue(enginePath: string, workspaceRoot: string, storagePath: string) {
     if (isJinjaParsing || jinjaParseQueue.length === 0) return;
     isJinjaParsing = true;
 
     while (jinjaParseQueue.length > 0) {
         const filePath = jinjaParseQueue.shift()!; 
         const scriptPath = path.join(enginePath, 'main_jinja_parser.py');
-        const command = `${activePythonCmd} "${scriptPath}" "${filePath}" "${workspaceRoot}"`;
+        const command = `${activePythonCmd} "${scriptPath}" "${filePath}" "${workspaceRoot}" "${storagePath}"`;
         const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
         const content = doc ? doc.getText() : fs.readFileSync(filePath, 'utf-8');
 
@@ -994,7 +1007,7 @@ async function processJinjaQueue(enginePath: string, workspaceRoot: string) {
                     child.stdin.end();
                 }
             });
-            loadJinjaSchemaIntoMemory(filePath, workspaceRoot);
+            loadJinjaSchemaIntoMemory(filePath, workspaceRoot, storagePath);
         } catch (e) {
             console.error(`Jinja Syntax Parsing Error: ${filePath}`, e);
         }
@@ -1005,9 +1018,8 @@ async function processJinjaQueue(enginePath: string, workspaceRoot: string) {
 /**
  * Reads the generated _schema.json file and updates the in-memory registries.
  */
-function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string, enginePath: string) {
-    const safeName = getSafePyName(pyFilePath, workspaceRoot);
-    const jsonPath = path.join(workspaceRoot, 'backend_schemas', safeName);
+function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string, storagePath: string, enginePath: string) {    const safeName = getSafePyName(pyFilePath, workspaceRoot);
+    const jsonPath = path.join(storagePath, 'backend_schemas', safeName);
 
     if (!fs.existsSync(jsonPath)) return;
 
@@ -1054,11 +1066,11 @@ function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string, engineP
                 if (uris.length > 0) {
                     const htmlPath = uris[0].fsPath;
                     
-                    loadJinjaSchemaIntoMemory(htmlPath, workspaceRoot);
+                    loadJinjaSchemaIntoMemory(htmlPath, workspaceRoot, storagePath);
 
                     if (!jinjaParseQueue.includes(htmlPath)) {
                         jinjaParseQueue.push(htmlPath);
-                        processJinjaQueue(enginePath, workspaceRoot);
+                        processJinjaQueue(enginePath, workspaceRoot, storagePath);
                     }
                 }
             });
@@ -1087,10 +1099,11 @@ function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string, engineP
  * * @param htmlFilePath - The absolute path to the template file (HTML/Jinja).
  * @param workspaceRoot - The root path of the current workspace.
  */
-function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string) {
+function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string, storagePath: string) {
+    
     const templateKey = getTemplateKey(htmlFilePath); 
     const safeName = getSafeJinjaName(htmlFilePath, workspaceRoot); 
-    const jsonPath = path.join(workspaceRoot, 'jinja_schemas', safeName);
+    const jsonPath = path.join(storagePath, 'jinja_schemas', safeName);
 
     const uri = vscode.Uri.file(htmlFilePath);
 
