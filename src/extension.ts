@@ -1,9 +1,9 @@
 /**
- * OmniJinja VS Code Extension 
+ * OmniJinja VS Code Extension
  *
  * This module orchestrates the frontend language server features for Jinja2 templates.
- * It acts as the bridge between VS Code's Extension API and the Python-based OmniJinja 
- * analysis engine. Features include intelligent auto-completion, hover documentation, 
+ * It acts as the bridge between VS Code's Extension API and the Python-based OmniJinja
+ * analysis engine. Features include intelligent auto-completion, hover documentation,
  * go-to-definition, real-time diagnostics (linting), and automated Quick Fixes.
  */
 
@@ -20,29 +20,29 @@ import { BUILTIN_FILTERS, BUILTIN_TAGS, BUILTIN_TESTS, BUILTIN_GLOBALS } from '.
 // ==========================================
 
 /** * Caches context data passed from Python views to templates.
- * Map structure: Template Name -> Map<Python Source Path, Context Variables> 
+ * Map structure: Template Name -> Map<Python Source Path, Context Variables>
  */
-const templateRegistry = new Map<string, Map<string, any>>(); 
+const templateRegistry = new Map<string, Map<string, any>>();
 
 /** * Caches custom Flask filters extracted from Python code.
- * Map structure: Python Source Path -> Array of Filter Metadata 
+ * Map structure: Python Source Path -> Array of Filter Metadata
  */
-const filterRegistry = new Map<string, any[]>(); 
+const filterRegistry = new Map<string, any[]>();
 
 /** * Caches template files referenced within Python files.
- * Map structure: Python Source Path -> Set of Template Paths 
+ * Map structure: Python Source Path -> Set of Template Paths
  */
-const templateFilesRegistry = new Map<string, Set<string>>(); 
+const templateFilesRegistry = new Map<string, Set<string>>();
 
 /** * Caches local variables defined within the Jinja template itself (e.g., via {% set %}).
- * Map structure: Template Name -> Local Context Variables 
+ * Map structure: Template Name -> Local Context Variables
  */
-const internalJinjaRegistry = new Map<string, any>(); 
+const internalJinjaRegistry = new Map<string, any>();
 
 /** * Caches external requirements (Demand) parsed from Jinja templates.
  * Map structure: Template Name -> Requirements JSON Object
  */
-const externalRequirementsRegistry = new Map<string, any>(); 
+const externalRequirementsRegistry = new Map<string, any>();
 
 /** * Caches raw render calls (Supply) from Python files specifically for validation.
  * Map structure: Python Source Path -> Array of Render Calls
@@ -108,9 +108,9 @@ function getDisplayType(val: any): string {
     if (val && typeof val === 'object') {
         if (val.__is_iterable__) {
             if (val.__element__) return `${val.__type__}[${val.__element__.__type__ || 'Object'}]`;
-            return `${val.__type__}[...]`; 
+            return `${val.__type__}[...]`;
         }
-        return val.__type__ || 'Object'; 
+        return val.__type__ || 'Object';
     }
     return 'Unknown';
 }
@@ -139,6 +139,223 @@ function getDiagnosticKey(uri: vscode.Uri, line: number, message: string): strin
     return `${uri.fsPath}|${line}|${message}`;
 }
 
+function mergeSchema(target: any, source: any) {
+    if (!source || typeof source !== 'object') {
+        return target;
+    }
+    for (const [key, value] of Object.entries(source)) {
+        target[key] = value;
+    }
+    return target;
+}
+
+function normalizeTemplateName(templateName: string) {
+    return templateName.replace(/\\/g, '/');
+}
+
+function findTemplateKey<T>(registry: Map<string, T>, templateName: string) {
+    const normalized = normalizeTemplateName(templateName);
+    if (registry.has(normalized)) {
+        return normalized;
+    }
+
+    const basename = path.basename(normalized);
+    if (registry.has(basename)) {
+        return basename;
+    }
+
+    for (const key of registry.keys()) {
+        if (path.basename(key) === basename) {
+            return key;
+        }
+    }
+    return normalized;
+}
+
+function getBackendContextForTemplate(templateName: string) {
+    const context: any = {};
+    const templateKey = findTemplateKey(templateRegistry, templateName);
+    const sources = templateRegistry.get(templateKey);
+    if (!sources) {
+        return context;
+    }
+
+    for (const sourceContext of sources.values()) {
+        mergeSchema(context, sourceContext);
+    }
+    return context;
+}
+
+function getInternalExportsForTemplate(templateName: string) {
+    const exports: any = {};
+    const templateKey = findTemplateKey(internalJinjaRegistry, templateName);
+    const internal = internalJinjaRegistry.get(templateKey);
+    if (!internal) {
+        return exports;
+    }
+
+    if (internal.globals) {
+        mergeSchema(exports, internal.globals);
+    }
+
+    for (const [key, value] of Object.entries(internal)) {
+        if (!['globals', 'scoped', 'dependencies'].includes(key)) {
+            exports[key] = value;
+        }
+    }
+    return exports;
+}
+
+function getInheritedBackendContext(templateName: string) {
+    const inheritedContext: any = {};
+    const visited = new Set<string>();
+
+    function visit(currentTemplate: string) {
+        const currentTemplateKey = findTemplateKey(templateDependenciesRegistry, currentTemplate);
+        const deps = templateDependenciesRegistry.get(currentTemplateKey);
+        const parentTemplate = deps?.extends;
+        if (!parentTemplate || visited.has(parentTemplate)) {
+            return;
+        }
+
+        visited.add(parentTemplate);
+        visit(parentTemplate);
+        mergeSchema(inheritedContext, getBackendContextForTemplate(parentTemplate));
+        mergeSchema(inheritedContext, getInternalExportsForTemplate(parentTemplate));
+    }
+
+    visit(templateName);
+    return inheritedContext;
+}
+
+function getEffectiveBackendContext(templateName: string) {
+    const context = getInheritedBackendContext(templateName);
+    mergeSchema(context, getBackendContextForTemplate(templateName));
+    mergeSchema(context, getInternalExportsForTemplate(templateName));
+    return context;
+}
+
+function hasKnownSchemaChildren(schemaNode: any) {
+    if (!schemaNode || typeof schemaNode !== 'object' || Array.isArray(schemaNode)) {
+        return false;
+    }
+
+    const metadataKeys = new Set(['def_line', 'args', 'signature', 'docstring']);
+    return Object.keys(schemaNode).some(key => !key.startsWith('__') && !metadataKeys.has(key));
+}
+
+function isGenericSchemaLeaf(schemaNode: any) {
+    return !!schemaNode && typeof schemaNode === 'object' && '__type__' in schemaNode && !hasKnownSchemaChildren(schemaNode);
+}
+
+function isRequirementSatisfied(requirementNode: any, schemaNode: any): boolean {
+    if (schemaNode === undefined || schemaNode === null) {
+        return false;
+    }
+    if (!requirementNode || typeof requirementNode !== 'object' || !schemaNode || typeof schemaNode !== 'object') {
+        return true;
+    }
+
+    if (requirementNode.__is_callable__) {
+        const schemaType = schemaNode.__type__;
+        if (schemaType && !['Function', 'Method', 'Macro', 'Any'].includes(schemaType)) {
+            return false;
+        }
+    }
+
+    if (requirementNode.__is_iterable__) {
+        const schemaType = schemaNode.__type__;
+        const isIterable = schemaNode.__is_iterable__ || ['Iterable', 'List', 'Tuple', 'Dict', 'Any'].includes(schemaType);
+        if (!isIterable) {
+            return false;
+        }
+    }
+
+    const childKeys = Object.keys(requirementNode).filter(key => !key.startsWith('__'));
+    if (childKeys.length === 0) {
+        return true;
+    }
+
+    if (isGenericSchemaLeaf(schemaNode)) {
+        return true;
+    }
+
+    return childKeys.every(key => key in schemaNode && isRequirementSatisfied(requirementNode[key], schemaNode[key]));
+}
+
+function pruneRequirementsSatisfiedBySchema(requirements: any, schema: any): any {
+    if (!requirements || typeof requirements !== 'object' || !schema || typeof schema !== 'object') {
+        return requirements || {};
+    }
+
+    const pruned: any = {};
+    for (const [key, requirement] of Object.entries(requirements)) {
+        if (key.startsWith('__')) {
+            pruned[key] = requirement;
+            continue;
+        }
+
+        const schemaNode = schema[key];
+        if (isRequirementSatisfied(requirement, schemaNode)) {
+            continue;
+        }
+
+        if (requirement && typeof requirement === 'object' && schemaNode && typeof schemaNode === 'object') {
+            const nested = pruneRequirementsSatisfiedBySchema(requirement, schemaNode);
+            if (Object.keys(nested).length > 0) {
+                pruned[key] = nested;
+            }
+        } else {
+            pruned[key] = requirement;
+        }
+    }
+    return pruned;
+}
+
+function buildEffectiveExternalRequirements(templateName: string) {
+    const templateKey = findTemplateKey(externalRequirementsRegistry, templateName);
+    const demand = externalRequirementsRegistry.get(templateKey);
+    if (!demand) {
+        return undefined;
+    }
+
+    const inheritedContext = getInheritedBackendContext(templateKey);
+    return pruneRequirementsSatisfiedBySchema(demand, inheritedContext);
+}
+
+function resolveSchemaPath(context: any, pathParts: string[]) {
+    if (!context || pathParts.length === 0) {
+        return undefined;
+    }
+
+    let current = context[pathParts[0]];
+    for (const part of pathParts.slice(1)) {
+        if (isGenericSchemaLeaf(current)) {
+            return current;
+        }
+        if (!current || typeof current !== 'object' || !(part in current)) {
+            return undefined;
+        }
+        current = current[part];
+    }
+    return current;
+}
+
+function diagnosticIsSatisfiedByEffectiveContext(message: string, templateName: string) {
+    const context = getEffectiveBackendContext(templateName);
+    const undefinedMatch = message.match(/Undefined Warning:\s*'([^']+)'/);
+    if (undefinedMatch) {
+        return resolveSchemaPath(context, [undefinedMatch[1]]) !== undefined;
+    }
+
+    const propertyMatch = message.match(/Property Warning:\s*'([^']+)'\s+is not a known property of\s+'([^']+)'/);
+    if (propertyMatch) {
+        return resolveSchemaPath(context, [...propertyMatch[2].split('.'), propertyMatch[1]]) !== undefined;
+    }
+
+    return false;
+}
+
 // ==========================================
 // Code Action Provider (Lightbulb Quick Fix)
 // ==========================================
@@ -149,17 +366,17 @@ function getDiagnosticKey(uri: vscode.Uri, line: number, message: string): strin
  */
 export class OmniJinjaFixer implements vscode.CodeActionProvider {
     public provideCodeActions(
-        document: vscode.TextDocument, 
-        range: vscode.Range | vscode.Selection, 
-        context: vscode.CodeActionContext, 
+        document: vscode.TextDocument,
+        range: vscode.Range | vscode.Selection,
+        context: vscode.CodeActionContext,
         token: vscode.CancellationToken
     ): vscode.ProviderResult<(vscode.CodeAction | vscode.Command)[]> {
-        
+
         const actions: vscode.CodeAction[] = [];
 
         for (const diagnostic of context.diagnostics) {
             if (diagnostic.source === 'OmniJinja') {
-                
+
                 if (diagnostic.severity === vscode.DiagnosticSeverity.Error) {
                     const fixedCode = fixedCodeRegistry.get(document.uri.fsPath);
                     if (fixedCode) {
@@ -179,7 +396,7 @@ export class OmniJinjaFixer implements vscode.CodeActionProvider {
                         command: 'omnijinja.ignoreDiagnostic',
                         arguments: [document.uri, diagnostic]
                     };
-                    
+
                     actions.push(ignoreAction);
                 }
             }
@@ -193,7 +410,7 @@ export class OmniJinjaFixer implements vscode.CodeActionProvider {
 // Extension Activation & Lifecycle
 // ==========================================
 
-let activePythonCmd = 'python'; 
+let activePythonCmd = 'python';
 
 async function resolvePythonPath(): Promise<string | undefined> {
     const config = vscode.workspace.getConfiguration('omnijinja');
@@ -209,7 +426,7 @@ async function resolvePythonPath(): Promise<string | undefined> {
             continue;
         }
     }
-    return undefined; 
+    return undefined;
 }
 
 
@@ -226,9 +443,9 @@ export async function activate(context: vscode.ExtensionContext) {
                 vscode.commands.executeCommand('workbench.action.openSettings', 'omnijinja.pythonPath');
             }
         });
-        return; 
+        return;
     }
-    activePythonCmd = resolvedCmd; 
+    activePythonCmd = resolvedCmd;
 
     diagnosticCollection = vscode.languages.createDiagnosticCollection('omnijinja');
     context.subscriptions.push(diagnosticCollection);
@@ -264,8 +481,8 @@ export async function activate(context: vscode.ExtensionContext) {
     // Register the Quick Fix Code Action Provider
     context.subscriptions.push(
         vscode.languages.registerCodeActionsProvider(
-            supportedLanguages, 
-            new OmniJinjaFixer(), 
+            supportedLanguages,
+            new OmniJinjaFixer(),
             { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
         )
     );
@@ -276,7 +493,7 @@ export async function activate(context: vscode.ExtensionContext) {
         title: "OmniJinja: Loading Cache & Initializing...",
     }, async (progress) => {
         const pyFiles = await vscode.workspace.findFiles('**/*.py', '**/{node_modules,.venv,venv}/**');
-        
+
         for (const file of pyFiles) {
             loadSchemaIntoMemory(file.fsPath, workspaceRoot, storagePath, pythonEnginePath);
         }
@@ -289,7 +506,7 @@ export async function activate(context: vscode.ExtensionContext) {
             const templateFiles = await vscode.workspace.findFiles(pattern, excludePattern);
             for (const file of templateFiles) {
                 allTemplateFiles.push(file);
-                loadJinjaSchemaIntoMemory(file.fsPath, workspaceRoot, storagePath); 
+                loadJinjaSchemaIntoMemory(file.fsPath, workspaceRoot, storagePath);
             }
         }
 
@@ -299,7 +516,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 return content.includes('flask') || content.includes('jinja');
             } catch(e) { return false; }
         });
-        
+
         for (const file of filesToParse) parseQueue.push(file.fsPath);
         for (const file of allTemplateFiles) jinjaParseQueue.push(file.fsPath);
 
@@ -358,17 +575,17 @@ export async function activate(context: vscode.ExtensionContext) {
     });
 
     const htmlWatcher = vscode.workspace.createFileSystemWatcher('**/*.{html,jinja,j2,jinja2}');
-    
+
     htmlWatcher.onDidDelete((uri) => {
         const deletedHtmlPath = uri.fsPath;
         const templateKey = getTemplateKey(deletedHtmlPath);
         const safeName = getSafeJinjaName(deletedHtmlPath, workspaceRoot);
 
-        diagnosticCollection.delete(uri); 
+        diagnosticCollection.delete(uri);
         internalJinjaRegistry.delete(templateKey);
         templateDependenciesRegistry.delete(templateKey);
         fixedCodeRegistry.delete(deletedHtmlPath);
-        externalRequirementsRegistry.delete(templateKey); 
+        externalRequirementsRegistry.delete(templateKey);
 
         const jsonPath = path.join(storagePath, 'jinja_schemas', safeName);
         if (fs.existsSync(jsonPath)) fs.unlinkSync(jsonPath);
@@ -381,7 +598,7 @@ export async function activate(context: vscode.ExtensionContext) {
     function buildStrictContext(document: vscode.TextDocument, position: vscode.Position) {
         const currentHtmlName = getTemplateKey(document.fileName);
         const mergedContext: any = {};
-        const activeLine = position.line + 1; 
+        const activeLine = position.line + 1;
 
         const visitedTemplates = new Set<string>();
 
@@ -446,7 +663,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
             const pySourcesMap = templateRegistry.get(templateName);
             if (pySourcesMap) {
-                for (const ctx of pySourcesMap.values()) Object.assign(mergedContext, ctx); 
+                for (const ctx of pySourcesMap.values()) Object.assign(mergedContext, ctx);
             }
 
             const internalCtx = internalJinjaRegistry.get(templateName);
@@ -460,7 +677,7 @@ export async function activate(context: vscode.ExtensionContext) {
                         }
                     }
                 }
-                
+
                 // B. Scoped (e.g., {% for %})
                 if (isRoot && internalCtx.scoped) {
                     for (const scope of internalCtx.scoped) {
@@ -469,8 +686,8 @@ export async function activate(context: vscode.ExtensionContext) {
                         }
                     }
                 }
-                
-                // C. Macros 
+
+                // C. Macros
                 for (const key in internalCtx) {
                     if (key !== 'globals' && key !== 'scoped' && key !== 'dependencies') {
                         mergedContext[key] = internalCtx[key];
@@ -493,7 +710,7 @@ export async function activate(context: vscode.ExtensionContext) {
         {
             provideCompletionItems(document, position) {
                 const linePrefix = document.lineAt(position).text.substr(0, position.character);
-                
+
                 // Only provide completions inside Jinja delimiters
                 if (!linePrefix.includes('{{') && !linePrefix.includes('{%')) return undefined;
 
@@ -522,10 +739,10 @@ export async function activate(context: vscode.ExtensionContext) {
                         const argsMatch = info.signature.match(/\((.*)\)/);
                         if (argsMatch && argsMatch[1] && argsMatch[1] !== 'value' && argsMatch[1] !== 's' && argsMatch[1] !== 'seq' && argsMatch[1] !== 'obj') {
                             item.insertText = new vscode.SnippetString(`${name}($1)`);
-                        } else item.insertText = name; 
+                        } else item.insertText = name;
                         completionItems.push(item);
                     }
-                    return completionItems; 
+                    return completionItems;
                 }
 
                 // 2. Test Completions (Triggered by 'is ')
@@ -545,7 +762,7 @@ export async function activate(context: vscode.ExtensionContext) {
                     const currentWord = tagMatch[1];
                     const lineText = document.lineAt(position.line).text;
                     const afterCursor = lineText.substring(position.character);
-                    
+
                     // Smart cursor positioning post-completion
                     let endPosition = position;
                     if (afterCursor.startsWith(' %}')) endPosition = position.translate(0, 3);
@@ -567,7 +784,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 // 4. Variable and Property Completions
                 const inJinjaContextMatch = linePrefix.match(/(?:\{\{|\{%)[^{}%]*$/);
                 if (inJinjaContextMatch) {
-                    const jinjaText = inJinjaContextMatch[0]; 
+                    const jinjaText = inJinjaContextMatch[0];
 
                     const mergedContext = buildStrictContext(document, position);
 
@@ -577,7 +794,7 @@ export async function activate(context: vscode.ExtensionContext) {
                         const basePath = propMatch[1];
                         const parts = basePath.split('.');
                         let currentLevel = mergedContext;
-                        
+
                         for (const part of parts) {
                             if (currentLevel && typeof currentLevel === 'object' && part in currentLevel) {
                                 currentLevel = currentLevel[part];
@@ -589,13 +806,13 @@ export async function activate(context: vscode.ExtensionContext) {
                         if (currentLevel && typeof currentLevel === 'object') {
                             for (const [key, val] of Object.entries(currentLevel)) {
                                 // Filter out internal metadata keys
-                                if (['__type__', 'def_line', 'args', 'signature', '__is_iterable__', '__element__'].includes(key)) continue; 
-                                
+                                if (['__type__', 'def_line', 'args', 'signature', '__is_iterable__', '__element__'].includes(key)) continue;
+
                                 const isCallable = (val as any)?.__type__ === 'Function' || (val as any)?.__type__ === 'Macro';
                                 const kind = isCallable ? vscode.CompletionItemKind.Method : vscode.CompletionItemKind.Property;
                                 const item = new vscode.CompletionItem(key, kind);
                                 item.detail = `OmniJinja: ${getDisplayType(val)}`;
-                                
+
                                 // Auto-inject parenthesis for callable properties
                                 if (isCallable) {
                                     const methodVal = val as any;
@@ -609,10 +826,10 @@ export async function activate(context: vscode.ExtensionContext) {
                                 completionItems.push(item);
                             }
                         }
-                        
-                        return completionItems; 
-                    } 
-                    
+
+                        return completionItems;
+                    }
+
                     // Handle Base Variable Access (e.g., user)
                     const isDoubleBraceVar = linePrefix.match(/\{\{.*?([a-zA-Z0-9_]*)$/);
                     const isTagVar = linePrefix.match(/\{%\s+[a-zA-Z0-9_]+\s+.*?([a-zA-Z0-9_]*)$/);
@@ -624,7 +841,7 @@ export async function activate(context: vscode.ExtensionContext) {
                             const kind = isCallable ? vscode.CompletionItemKind.Function : vscode.CompletionItemKind.Variable;
                             const item = new vscode.CompletionItem(varName, kind);
                             item.detail = `OmniJinja: ${getDisplayType(varInfo)}`;
-                            
+
                             if (isCallable && (varInfo as any).args) {
                                 const argsList = (varInfo as any).args as string[];
                                 const snippetArgs = argsList.map((arg: string, index: number) => `\${${index + 1}:${arg}}`).join(', ');
@@ -632,7 +849,7 @@ export async function activate(context: vscode.ExtensionContext) {
                             }
                             completionItems.push(item);
                         }
-                        
+
                         // Inject Built-in Globals
                         for (const [name, info] of Object.entries(BUILTIN_GLOBALS)) {
                             const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Class);
@@ -646,7 +863,7 @@ export async function activate(context: vscode.ExtensionContext) {
                     }
                     return undefined;
                 }
-                
+
                 return undefined;
             }
         },
@@ -663,11 +880,11 @@ export async function activate(context: vscode.ExtensionContext) {
                 if (pathMatch) {
                     const completionItems: vscode.CompletionItem[] = [];
                     const uniquePaths = new Set<string>();
-                    
+
                     for (const paths of templateFilesRegistry.values()) {
                         for (const p of paths) uniquePaths.add(p);
                     }
-                    
+
                     for (const templatePath of uniquePaths) {
                         const item = new vscode.CompletionItem(templatePath, vscode.CompletionItemKind.File);
                         item.detail = "Jinja Template";
@@ -679,7 +896,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 return undefined;
             }
         },
-        '"', "'" 
+        '"', "'"
     );
 
     const hoverProvider = vscode.languages.registerHoverProvider(
@@ -712,7 +929,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 const mergedContext = buildStrictContext(document, position);
 
                 let foundValue: any = undefined;
-                
+
                 // Attempt precise path matching first (e.g., user.profile)
                 const pathMatch = textUpToHover.match(/([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)$/);
                 if (pathMatch) {
@@ -748,7 +965,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 if (foundValue) {
                     const md = new vscode.MarkdownString();
                     const typeStr = getDisplayType(foundValue);
-                    
+
                     const isCallable = foundValue && typeof foundValue === 'object' && (foundValue.__type__ === 'Function' || foundValue.__type__ === 'Macro');
                     if (isCallable) {
                         const sig = foundValue.signature || `${hoveredWord}()`;
@@ -770,7 +987,7 @@ export async function activate(context: vscode.ExtensionContext) {
         {
             provideSignatureHelp(document, position) {
                 const linePrefix = document.lineAt(position).text.substring(0, position.character);
-                
+
                 // Process Custom Filters
                 const filterMatch = linePrefix.match(/\|\s*([a-zA-Z0-9_]+)\s*\([^)]*$/);
                 if (filterMatch) {
@@ -791,7 +1008,7 @@ export async function activate(context: vscode.ExtensionContext) {
                             }
                             sigHelp.signatures = [sigInfo];
                             sigHelp.activeSignature = 0;
-                            sigHelp.activeParameter = activeParameterIndex; 
+                            sigHelp.activeParameter = activeParameterIndex;
                             return sigHelp;
                         }
                     }
@@ -802,7 +1019,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 if (methodMatch) {
                     const fullPath = methodMatch[1];
                     const parts = fullPath.split('.');
-                    
+
                     const mergedContext = buildStrictContext(document, position);
 
                     let currentLevel = mergedContext;
@@ -824,7 +1041,7 @@ export async function activate(context: vscode.ExtensionContext) {
                         if (currentLevel.args && Array.isArray(currentLevel.args)) {
                             sigInfo.parameters = currentLevel.args.map((argName: string) => new vscode.ParameterInformation(argName));
                         }
-                        
+
                         const argsString = methodMatch[0].substring(methodMatch[0].indexOf('(') + 1);
                         const activeParameterIndex = (argsString.match(/,/g) || []).length;
 
@@ -837,7 +1054,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 return undefined;
             }
         },
-        '(', ',' 
+        '(', ','
     );
 
     const definitionProvider = vscode.languages.registerDefinitionProvider(
@@ -863,8 +1080,8 @@ export async function activate(context: vscode.ExtensionContext) {
                 if (pySourcesMap) {
                     for (const [pyPath, contextData] of pySourcesMap.entries()) {
                         let found = false;
-                        let targetLine = 0; 
-                        
+                        let targetLine = 0;
+
                         const pathMatch = document.lineAt(position.line).text.substring(0, wordRange.end.character).match(/([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)$/);
                         if (pathMatch) {
                             const fullPath = pathMatch[1];
@@ -887,14 +1104,14 @@ export async function activate(context: vscode.ExtensionContext) {
                         if (!found) {
                             const deepSearch = (obj: any) => {
                                 if (!obj || typeof obj !== 'object') return;
-                                if (word in obj) { 
-                                    found = true; 
+                                if (word in obj) {
+                                    found = true;
                                     const targetObj = obj[word];
                                     if (targetObj && typeof targetObj === 'object') {
                                         const rawLine = targetObj.def_line || targetObj.line;
-                                        if (rawLine) targetLine = rawLine - 1; 
+                                        if (rawLine) targetLine = rawLine - 1;
                                     }
-                                    return; 
+                                    return;
                                 }
                                 for (const key in obj) {
                                     if (!['__type__', 'def_line', 'args', 'signature', '__is_iterable__'].includes(key) && typeof obj[key] === 'object') {
@@ -914,31 +1131,31 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
-        pyChangeListener, 
-        htmlChangeListener, 
-        watcher, 
+        pyChangeListener,
+        htmlChangeListener,
+        watcher,
         htmlWatcher,
-        completionProvider, 
-        hoverProvider, 
-        signatureProvider, 
-        definitionProvider, 
+        completionProvider,
+        hoverProvider,
+        signatureProvider,
+        definitionProvider,
         templatePathProvider
     );
     // Register the command to handle the "Ignore" action
     context.subscriptions.push(vscode.commands.registerCommand('omnijinja.ignoreDiagnostic', (uri: vscode.Uri, diagnostic: vscode.Diagnostic) => {
         const key = getDiagnosticKey(uri, diagnostic.range.start.line, diagnostic.message);
-        
+
         // Add the diagnostic identifier to our local blacklist
         ignoredDiagnosticsCache.add(key);
-        
+
         // Immediately refresh the UI by filtering out the ignored diagnostic
         const currentDiagnostics = diagnosticCollection.get(uri) || [];
-        const filtered = currentDiagnostics.filter(d => 
+        const filtered = currentDiagnostics.filter(d =>
             getDiagnosticKey(uri, d.range.start.line, d.message) !== key
         );
-        
+
         diagnosticCollection.set(uri, filtered);
-        
+
         // Optional: Notify the user that the ignore is temporary for this session
         vscode.window.setStatusBarMessage("Warning ignored for this session.", 3000);
     }));
@@ -952,11 +1169,13 @@ export async function activate(context: vscode.ExtensionContext) {
  * Triggers the Python parsing script asynchronously for queued .py files.
  */
 async function processQueue(enginePath: string, workspaceRoot: string, storagePath: string) {
-    if (isParsing || parseQueue.length === 0) return;
+    if (isParsing || parseQueue.length === 0) {
+        return;
+    }
     isParsing = true;
 
     while (parseQueue.length > 0) {
-        const filePath = parseQueue.shift()!; 
+        const filePath = parseQueue.shift()!;
         const scriptPath = path.join(enginePath, 'main_py_parser.py');
         const command = `${activePythonCmd} "${scriptPath}" "${filePath}" "${workspaceRoot}" "${storagePath}"`;
 
@@ -974,45 +1193,54 @@ async function processQueue(enginePath: string, workspaceRoot: string, storagePa
                     child.stdin.end();
                 }
             });
-            loadSchemaIntoMemory(filePath, workspaceRoot, storagePath, enginePath); 
+            loadSchemaIntoMemory(filePath, workspaceRoot, storagePath, enginePath);
         } catch (e) {
             console.error(`Python Backend Parsing Error: ${filePath}`, e);
         }
     }
-    isParsing = false; 
+    isParsing = false;
 }
 
 /**
  * Triggers the Jinja syntax detection script asynchronously for queued templates.
  */
 async function processJinjaQueue(enginePath: string, workspaceRoot: string, storagePath: string) {
-    if (isJinjaParsing || jinjaParseQueue.length === 0) return;
+    if (isJinjaParsing || jinjaParseQueue.length === 0) {
+        return;
+    }
     isJinjaParsing = true;
 
-    while (jinjaParseQueue.length > 0) {
-        const filePath = jinjaParseQueue.shift()!; 
-        const scriptPath = path.join(enginePath, 'main_jinja_parser.py');
-        const command = `${activePythonCmd} "${scriptPath}" "${filePath}" "${workspaceRoot}" "${storagePath}"`;
-        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
-        const content = doc ? doc.getText() : fs.readFileSync(filePath, 'utf-8');
+    try {
+        while (jinjaParseQueue.length > 0) {
+            const filePath = jinjaParseQueue.shift()!;
+            const scriptPath = path.join(enginePath, 'main_jinja_parser.py');
+            const command = `${activePythonCmd} "${scriptPath}" "${filePath}" "${workspaceRoot}" "${storagePath}"`;
+            const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
+            const content = doc ? doc.getText() : fs.readFileSync(filePath, 'utf-8');
 
-        try {
-            await new Promise((resolve, reject) => {
-                const child = exec(command, (error, stdout) => {
-                    if (error) reject(error);
-                    else resolve(stdout);
+            try {
+                await new Promise((resolve, reject) => {
+                    const child = exec(command, (error, stdout) => {
+                        if (error) reject(error);
+                        else resolve(stdout);
+                    });
+                    if (child.stdin) {
+                        child.stdin.write(content);
+                        child.stdin.end();
+                    }
                 });
-                if (child.stdin) {
-                    child.stdin.write(content);
-                    child.stdin.end();
-                }
-            });
-            loadJinjaSchemaIntoMemory(filePath, workspaceRoot, storagePath);
-        } catch (e) {
-            console.error(`Jinja Syntax Parsing Error: ${filePath}`, e);
+                loadJinjaSchemaIntoMemory(filePath, workspaceRoot, storagePath);
+            } catch (e) {
+                console.error(`Jinja Syntax Parsing Error: ${filePath}`, e);
+            }
         }
+    } finally {
+        isJinjaParsing = false;
     }
-    isJinjaParsing = false; 
+
+    if (jinjaParseQueue.length > 0) {
+        processJinjaQueue(enginePath, workspaceRoot, storagePath);
+    }
 }
 
 /**
@@ -1025,7 +1253,7 @@ function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string, storage
 
     try {
         const schemaData = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
-        
+
         const affectedTemplates = new Set<string>();
 
         const oldCalls = renderCallRegistry.get(pyFilePath);
@@ -1036,7 +1264,7 @@ function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string, storage
 
                 const sourceMap = templateRegistry.get(oldTemplateName);
                 if (sourceMap && sourceMap.has(pyFilePath)) {
-                    sourceMap.delete(pyFilePath); 
+                    sourceMap.delete(pyFilePath);
                     if (sourceMap.size === 0) templateRegistry.delete(oldTemplateName);
                 }
             }
@@ -1047,7 +1275,7 @@ function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string, storage
 
             for (const call of schemaData.render_calls) {
                 const templateName = call.template.replace(/\\/g, '/');
-                affectedTemplates.add(templateName); 
+                affectedTemplates.add(templateName);
 
                 if (!templateRegistry.has(templateName)) {
                     templateRegistry.set(templateName, new Map<string, any>());
@@ -1065,13 +1293,11 @@ function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string, storage
             vscode.workspace.findFiles(`**/${templateName}`, '**/{node_modules,.venv,venv}/**').then(uris => {
                 if (uris.length > 0) {
                     const htmlPath = uris[0].fsPath;
-                    
-                    loadJinjaSchemaIntoMemory(htmlPath, workspaceRoot, storagePath);
 
                     if (!jinjaParseQueue.includes(htmlPath)) {
                         jinjaParseQueue.push(htmlPath);
-                        processJinjaQueue(enginePath, workspaceRoot, storagePath);
                     }
+                    processJinjaQueue(enginePath, workspaceRoot, storagePath);
                 }
             });
         }
@@ -1094,18 +1320,19 @@ function loadSchemaIntoMemory(pyFilePath: string, workspaceRoot: string, storage
 }
 
 /**
- * Reads the generated _jinja.json file from disk, updates internal registries, 
+ * Reads the generated _jinja.json file from disk, updates internal registries,
  * and applies diagnostic wavy lines to the editor while respecting the ignore blacklist.
  * * @param htmlFilePath - The absolute path to the template file (HTML/Jinja).
  * @param workspaceRoot - The root path of the current workspace.
  */
 function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string, storagePath: string) {
-    
-    const templateKey = getTemplateKey(htmlFilePath); 
-    const safeName = getSafeJinjaName(htmlFilePath, workspaceRoot); 
+
+    const templateKey = getTemplateKey(htmlFilePath);
+    const safeName = getSafeJinjaName(htmlFilePath, workspaceRoot);
     const jsonPath = path.join(storagePath, 'jinja_schemas', safeName);
 
     const uri = vscode.Uri.file(htmlFilePath);
+    diagnosticCollection.delete(uri);
 
     // 1. Check if diagnostics are globally enabled in settings
     const config = vscode.workspace.getConfiguration('omnijinja');
@@ -1113,18 +1340,17 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string, 
 
     // If schema file doesn't exist or diagnostics are disabled, clear existing markers and exit
     if (!fs.existsSync(jsonPath) || !enabled) {
-        diagnosticCollection.delete(uri);
         return;
     }
 
     try {
         const data = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
-        
+
         // 2. Update memory registries for internal variables and macros
         const internalData: any = {};
         if (data.internal_variables) {
             Object.assign(internalData, data.internal_variables);
-            
+
             if (data.internal_variables.dependencies) {
                 templateDependenciesRegistry.set(templateKey, data.internal_variables.dependencies);
             } else {
@@ -1133,7 +1359,7 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string, 
         } else {
             templateDependenciesRegistry.delete(templateKey);
         }
-        
+
         if (data.macros) {
             Object.assign(internalData, data.macros);
         }
@@ -1149,7 +1375,7 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string, 
         // 4. Update External Requirements (Demand) and trigger cross-file validation
         if (data.external_requirements) {
             externalRequirementsRegistry.set(templateKey, data.external_requirements);
-            
+
             // Re-validate all Python files that supply variables to this specific template
             const pySourcesMap = templateRegistry.get(templateKey);
             if (pySourcesMap) {
@@ -1164,7 +1390,7 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string, 
         // 5. Process and render Diagnostics (Wavy Underlines)
         if (data.diagnostics && Array.isArray(data.diagnostics)) {
             const diagnostics: vscode.Diagnostic[] = [];
-            
+
             // Check if this template is currently linked to any Python backend logic
             const isLinked = templateRegistry.has(templateKey) && templateRegistry.get(templateKey)!.size > 0;
 
@@ -1175,41 +1401,45 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string, 
                 // --- SILENT IGNORE FILTER ---
                 // Skip this diagnostic if its unique key exists in the local ignore cache
                 if (ignoredDiagnosticsCache.has(getDiagnosticKey(uri, lineNum, message))) {
-                    continue; 
+                    continue;
                 }
 
                 // --- CONTEXTUAL FILTER ---
                 // Suppress "Undefined" warnings if the template isn't linked to a backend yet
                 const isUndefinedWarning = message.toLowerCase().includes('undefined');
                 if (!isLinked && isUndefinedWarning) {
-                    continue; 
+                    continue;
+                }
+
+                if (diagnosticIsSatisfiedByEffectiveContext(message, templateKey)) {
+                    continue;
                 }
 
                 // --- RANGE CALCULATION ---
                 let colNum = 0;
                 let length = 1000; // Default to a long length if column data is missing
-                
+
                 if (diag.col) {
                     colNum = Math.max(0, diag.col - 1);
                     length = diag.original ? String(diag.original).length : 5;
                 }
-                
+
                 const range = new vscode.Range(lineNum, colNum, lineNum, colNum + length);
-                const severity = diag.severity === 'error' ? 
-                    vscode.DiagnosticSeverity.Error : 
+                const severity = diag.severity === 'error' ?
+                    vscode.DiagnosticSeverity.Error :
                     vscode.DiagnosticSeverity.Warning;
-                
+
                 // Create the VS Code diagnostic object
                 const diagnostic = new vscode.Diagnostic(range, message, severity);
                 diagnostic.source = 'OmniJinja';
                 diagnostics.push(diagnostic);
             }
-            
-            // Push the filtered list of diagnostics to the editor UI
-            diagnosticCollection.set(uri, diagnostics);
+
+            if (diagnostics.length > 0) {
+                diagnosticCollection.set(uri, diagnostics);
+            }
         } else {
-            // Clear diagnostics if the JSON payload contains no issues
-            diagnosticCollection.delete(uri);
+            return;
         }
 
     } catch (e) {
@@ -1228,28 +1458,34 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string, 
  */
 function validateDataFlow(pyFilePath: string) {
     const calls = renderCallRegistry.get(pyFilePath);
-    if (!calls) return;
+    if (!calls) {
+        return;
+    }
 
     const diagnostics: vscode.Diagnostic[] = [];
 
     for (const call of calls) {
-        const templateName = path.basename(call.template);
-        const demand = externalRequirementsRegistry.get(templateName);
-        
-        if (!demand) continue; 
+        const templateName = call.template.replace(/\\/g, '/');
+        const demand = buildEffectiveExternalRequirements(templateName);
+
+        if (!demand || Object.keys(demand).length === 0) {
+            continue;
+        }
 
         const supply = call.context || {};
         const lineNum = Math.max(0, (call.render_line || 1) - 1);
 
         for (const [reqKey, reqVal] of Object.entries(demand)) {
-            if (reqKey.startsWith('__')) continue;
+            if (reqKey.startsWith('__')) {
+                continue;
+            }
 
             if (!(reqKey in supply)) {
                 // ROOT MISSING -> Warning
                 const range = new vscode.Range(lineNum, 0, lineNum, 50); // Highlight start of line
                 diagnostics.push(new vscode.Diagnostic(
-                    range, 
-                    `OmniJinja [DataFlow]: Template '${templateName}' requires variable '${reqKey}' which is not provided in render_template.`, 
+                    range,
+                    `OmniJinja [DataFlow]: Template '${templateName}' requires variable '${reqKey}' which is not provided in render_template.`,
                     vscode.DiagnosticSeverity.Warning
                 ));
             } else {
@@ -1258,7 +1494,7 @@ function validateDataFlow(pyFilePath: string) {
             }
         }
     }
-    
+
     // Publish diagnostics to the Python file
     pyDiagnosticCollection.set(vscode.Uri.file(pyFilePath), diagnostics);
 }
@@ -1267,7 +1503,12 @@ function validateDataFlow(pyFilePath: string) {
  * Recursively checks properties, callables, and iterables.
  */
 function checkDeep(pathStr: string, demandNode: any, supplyNode: any, templateName: string, lineNum: number, diagnostics: vscode.Diagnostic[]) {
-    if (!demandNode || typeof demandNode !== 'object') return;
+    if (!demandNode || typeof demandNode !== 'object') {
+        return;
+    }
+    if (isGenericSchemaLeaf(supplyNode)) {
+        return;
+    }
 
     // 1. Behavior Check: Callable Mismatch -> Error
     if (demandNode.__is_callable__) {
@@ -1275,9 +1516,9 @@ function checkDeep(pathStr: string, demandNode: any, supplyNode: any, templateNa
         if (sType && sType !== 'Function' && sType !== 'Method' && sType !== 'Macro' && sType !== 'Any') {
             const range = new vscode.Range(lineNum, 0, lineNum, 50);
             diagnostics.push(new vscode.Diagnostic(
-                range, 
-                `OmniJinja [DataFlow]: '${pathStr}' is called as a function in '${templateName}', but Python provides type '${sType}'.`, 
-                vscode.DiagnosticSeverity.Error
+                range,
+                `OmniJinja [DataFlow]: '${pathStr}' is called as a function in '${templateName}', but Python provides type '${sType}'.`,
+                vscode.DiagnosticSeverity.Warning
             ));
         }
     }
@@ -1289,22 +1530,24 @@ function checkDeep(pathStr: string, demandNode: any, supplyNode: any, templateNa
         if (sType && !isIterable && sType !== 'Iterable' && sType !== 'List' && sType !== 'Tuple' && sType !== 'Dict' && sType !== 'Any') {
             const range = new vscode.Range(lineNum, 0, lineNum, 50);
             diagnostics.push(new vscode.Diagnostic(
-                range, 
-                `OmniJinja [DataFlow]: '${pathStr}' is iterated over in '${templateName}', but Python provides type '${sType}'.`, 
-                vscode.DiagnosticSeverity.Error
+                range,
+                `OmniJinja [DataFlow]: '${pathStr}' is iterated over in '${templateName}', but Python provides type '${sType}'.`,
+                vscode.DiagnosticSeverity.Warning
             ));
         }
     }
 
     // 3. Deep Property Check -> Warning (Because Python dynamic nature might hide properties)
     for (const [key, val] of Object.entries(demandNode)) {
-        if (key.startsWith('__')) continue; // Skip metadata keys
+        if (key.startsWith('__')) {
+            continue;
+        }
 
         if (!supplyNode || typeof supplyNode !== 'object' || !(key in supplyNode)) {
             const range = new vscode.Range(lineNum, 0, lineNum, 50);
             diagnostics.push(new vscode.Diagnostic(
-                range, 
-                `OmniJinja [DataFlow]: Template '${templateName}' expects property '${pathStr}.${key}', which might be missing in the provided context.`, 
+                range,
+                `OmniJinja [DataFlow]: Template '${templateName}' expects property '${pathStr}.${key}', which might be missing in the provided context.`,
                 vscode.DiagnosticSeverity.Warning
             ));
         } else {
