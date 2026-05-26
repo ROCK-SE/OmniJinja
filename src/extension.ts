@@ -65,6 +65,11 @@ const ignoredDiagnosticsCache = new Set<string>();
  */
 const templateDependenciesRegistry = new Map<string, any>();
 
+/** * Caches block names inherited from parent templates and available for override.
+ * Map structure: Template Name -> Array of Block Names
+ */
+const templateBlocksRegistry = new Map<string, string[]>();
+
 // Background task queues and debounce timers for performance optimization
 const debounceTimers = new Map<string, NodeJS.Timeout>();
 const parseQueue: string[] = [];
@@ -233,6 +238,11 @@ function getEffectiveBackendContext(templateName: string) {
     mergeSchema(context, getBackendContextForTemplate(templateName));
     mergeSchema(context, getInternalExportsForTemplate(templateName));
     return context;
+}
+
+function getOverridableBlocksForTemplate(templateName: string) {
+    const templateKey = findTemplateKey(templateBlocksRegistry, templateName);
+    return templateBlocksRegistry.get(templateKey) || [];
 }
 
 function hasKnownSchemaChildren(schemaNode: any) {
@@ -584,6 +594,7 @@ export async function activate(context: vscode.ExtensionContext) {
         diagnosticCollection.delete(uri);
         internalJinjaRegistry.delete(templateKey);
         templateDependenciesRegistry.delete(templateKey);
+        templateBlocksRegistry.delete(templateKey);
         fixedCodeRegistry.delete(deletedHtmlPath);
         externalRequirementsRegistry.delete(templateKey);
 
@@ -781,7 +792,28 @@ export async function activate(context: vscode.ExtensionContext) {
                     return completionItems;
                 }
 
-                // 4. Variable and Property Completions
+                // 4. Parent Block Name Completions (Triggered inside '{% block ... %}')
+                const blockNameMatch = linePrefix.match(/\{%-?\s*block\s+([a-zA-Z0-9_]*)$/);
+                if (blockNameMatch) {
+                    const currentWord = blockNameMatch[1];
+                    const currentHtmlName = getTemplateKey(document.fileName);
+                    const overridableBlocks = getOverridableBlocksForTemplate(currentHtmlName);
+                    const startPos = position.translate(0, -currentWord.length);
+                    const replaceRange = new vscode.Range(startPos, position);
+
+                    for (const blockName of overridableBlocks) {
+                        const item = new vscode.CompletionItem(blockName, vscode.CompletionItemKind.Property);
+                        item.detail = 'Overridable Jinja block';
+                        item.documentation = new vscode.MarkdownString(`Block inherited from a parent template and available to override.`);
+                        item.insertText = blockName;
+                        item.range = replaceRange;
+                        completionItems.push(item);
+                    }
+
+                    return completionItems;
+                }
+
+                // 5. Variable and Property Completions
                 const inJinjaContextMatch = linePrefix.match(/(?:\{\{|\{%)[^{}%]*$/);
                 if (inJinjaContextMatch) {
                     const jinjaText = inJinjaContextMatch[0];
@@ -1364,6 +1396,12 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string, 
             Object.assign(internalData, data.macros);
         }
         internalJinjaRegistry.set(templateKey, internalData);
+
+        if (Array.isArray(data.blocks)) {
+            templateBlocksRegistry.set(templateKey, data.blocks);
+        } else {
+            templateBlocksRegistry.delete(templateKey);
+        }
 
         // 3. Cache the repaired code for the Quick Fix (Lightbulb) feature
         if (data.fixed_code) {
