@@ -108,7 +108,7 @@ Rule 5 is reported as a warning because Jinja code inside HTML comments may stil
 ### 4. Cross-Template Dependency Tracking
 OmniJinja intelligently builds an inheritance and dependency tree across your Jinja files. It fully resolves multi-file scopes, providing seamless completions and validation across boundaries.
 
-* Inheritance (extends): When a child template extends a base template, OmniJinja automatically resolves and suggests global variables (e.g., {% set %}) and macros defined in the parent.
+* Inheritance (extends): When a child template extends a base template, OmniJinja automatically resolves and suggests global variables (e.g., `{% set %}`), macros, and overridable block names defined in the parent. When writing `{% block ... %}` in the child template, inherited parent blocks are suggested for quick override.
 ![extends](https://github.com/ROCK-SE/OmniJinja/blob/main/image/extends.png)
 
 * Partials (include): When a template includes a component, OmniJinja ensures that variables provided by the Python backend to the parent view are correctly recognized inside the included "orphan" component.
