@@ -15,6 +15,8 @@ class LocalContextTracker:
         self.prepare_for_jedi = prepare_for_jedi
         self.dict_assignments = defaultdict(dict)
         self.list_schemas = defaultdict(dict)
+        self.name_schemas = defaultdict(dict)
+        self.model_schemas = {}
         self.schema_hints_by_expr = {}
 
     def generic_schema_leaf(self) -> dict:
@@ -56,6 +58,10 @@ class LocalContextTracker:
 
     def schema_hint_for_node(self, node: ast.AST, current_function: str | None):
         if isinstance(node, ast.Name) and current_function:
+            name_schema = self.name_schemas[current_function].get(node.id)
+            if name_schema:
+                return name_schema
+
             list_schema = self.list_schemas[current_function].get(node.id)
             if list_schema:
                 return list_schema
@@ -82,12 +88,20 @@ class LocalContextTracker:
             return self.list_schema_from_element_schema(self.schema_from_list_elements([node.elt]))
 
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            sqlalchemy_query_schema = self.schema_from_sqlalchemy_query_expr(node)
+            if sqlalchemy_query_schema:
+                return sqlalchemy_query_schema
+
             if node.func.attr in {"items", "lists", "keys", "values"}:
                 return {
                     "__type__": "Iterable",
                     "__is_iterable__": True,
                     "__element__": self.generic_schema_leaf(),
                 }
+
+        sqlalchemy_query_schema = self.schema_from_sqlalchemy_query_expr(node)
+        if sqlalchemy_query_schema:
+            return sqlalchemy_query_schema
 
         return None
 
@@ -99,6 +113,40 @@ class LocalContextTracker:
         self._track_list_literal_assignment(target, value, current_function)
         self._track_dict_item_assignment(target, value, current_function)
         self._track_attribute_schema_assignment(target, value, current_function)
+        self._track_name_schema_assignment(target, value, current_function)
+
+    def track_class_definition(self, node: ast.ClassDef):
+        if not self._is_sqlalchemy_model_class(node):
+            return
+
+        fields = {}
+        for stmt in node.body:
+            target_name = None
+            value = None
+
+            if isinstance(stmt, ast.Assign):
+                value = stmt.value
+                for target in stmt.targets:
+                    if isinstance(target, ast.Name):
+                        target_name = target.id
+                        break
+            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                target_name = stmt.target.id
+                value = stmt.value
+
+            if not target_name or value is None:
+                continue
+
+            field_schema = self._schema_from_sqlalchemy_column(value)
+            if field_schema:
+                fields[target_name] = field_schema
+
+        if fields:
+            self.model_schemas[node.name] = {
+                "__type__": node.name,
+                "__is_iterable__": False,
+                **fields,
+            }
 
     def track_call(self, node: ast.Call, current_function: str | None):
         self._track_list_append(node, current_function)
@@ -147,6 +195,14 @@ class LocalContextTracker:
             self.schema_from_list_elements(value.elts)
         )
 
+    def _track_name_schema_assignment(self, target: ast.AST, value: ast.AST, current_function: str | None):
+        if not current_function or not isinstance(target, ast.Name):
+            return
+
+        schema_hint = self.schema_hint_for_node(value, current_function)
+        if schema_hint:
+            self.name_schemas[current_function][target.id] = schema_hint
+
     def _track_dict_item_assignment(self, target: ast.AST, value: ast.AST, current_function: str | None):
         if not current_function or not isinstance(target, ast.Subscript):
             return
@@ -177,6 +233,92 @@ class LocalContextTracker:
             return
 
         self.schema_hints_by_expr[target_expr] = local_list_schema
+
+    def schema_from_sqlalchemy_query_expr(self, node: ast.AST):
+        model_name = self._get_sqlalchemy_query_model_name(node)
+        if not model_name:
+            return None
+
+        model_schema = self.model_schemas.get(model_name)
+        if not model_schema:
+            return None
+
+        return {
+            "__type__": "Query",
+            "__is_iterable__": True,
+            "__element__": dict(model_schema),
+        }
+
+    def _get_sqlalchemy_query_model_name(self, node: ast.AST):
+        if isinstance(node, ast.Attribute) and node.attr == "query":
+            if isinstance(node.value, ast.Name):
+                return node.value.id
+            return None
+
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in {"all", "filter", "filter_by", "order_by", "limit", "offset"}:
+                return self._get_sqlalchemy_query_model_name(node.func.value)
+
+        if isinstance(node, ast.Attribute):
+            return self._get_sqlalchemy_query_model_name(node.value)
+
+        return None
+
+    def _is_sqlalchemy_model_class(self, node: ast.ClassDef) -> bool:
+        for base in node.bases:
+            if isinstance(base, ast.Attribute) and base.attr == "Model":
+                return True
+            if isinstance(base, ast.Name) and base.id == "Model":
+                return True
+        return False
+
+    def _schema_from_sqlalchemy_column(self, node: ast.AST):
+        if not isinstance(node, ast.Call):
+            return None
+
+        func = node.func
+        if not (
+            isinstance(func, ast.Attribute) and func.attr == "Column"
+            or isinstance(func, ast.Name) and func.id == "Column"
+        ):
+            return None
+
+        column_type = self._sqlalchemy_column_type_name(node)
+        type_map = {
+            "String": "String",
+            "Text": "String",
+            "Unicode": "String",
+            "UnicodeText": "String",
+            "Integer": "Integer",
+            "SmallInteger": "Integer",
+            "BigInteger": "Integer",
+            "Float": "Float",
+            "Numeric": "Float",
+            "Boolean": "Boolean",
+            "Date": "Date",
+            "DateTime": "DateTime",
+            "Time": "Time",
+            "JSON": "Dictionary",
+        }
+
+        return {
+            "__type__": type_map.get(column_type, column_type or "Any"),
+            "__is_iterable__": False,
+        }
+
+    def _sqlalchemy_column_type_name(self, node: ast.Call):
+        if not node.args:
+            return None
+
+        type_expr = node.args[0]
+        if isinstance(type_expr, ast.Call):
+            type_expr = type_expr.func
+
+        if isinstance(type_expr, ast.Attribute):
+            return type_expr.attr
+        if isinstance(type_expr, ast.Name):
+            return type_expr.id
+        return None
 
     def _track_list_append(self, node: ast.Call, current_function: str | None):
         if not current_function:

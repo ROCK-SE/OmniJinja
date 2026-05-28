@@ -104,6 +104,10 @@ class FlaskTemplateVisitor(ast.NodeVisitor):
                     if isinstance(key, ast.Constant):
                         self.global_context[key.value] = self._prepare_for_jedi(value)
 
+    def visit_ClassDef(self, node: ast.ClassDef):
+        self.context_tracker.track_class_definition(node)
+        self.generic_visit(node)
+
     def visit_Assign(self, node: ast.Assign):
         for target in node.targets:
             self.context_tracker.track_assignment(target, node.value, self.current_function)
