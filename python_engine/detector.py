@@ -11,37 +11,6 @@ from typing import List
 from error_models import SyntaxError, State
 
 
-RAW_TAG_PATTERN = re.compile(r'\{%-?\s*(raw|endraw)\b.*?-?%\}', re.DOTALL)
-
-
-def mask_raw_blocks(template: str) -> str:
-    """
-    Keep raw/endraw tags visible, but hide the literal body from lightweight
-    regex checks while preserving line and column positions.
-    """
-    chars = list(template)
-    raw_body_start = None
-
-    for match in RAW_TAG_PATTERN.finditer(template):
-        tag_name = match.group(1)
-        if tag_name == "raw" and raw_body_start is None:
-            raw_body_start = match.end()
-            continue
-
-        if tag_name == "endraw" and raw_body_start is not None:
-            for idx in range(raw_body_start, match.start()):
-                if chars[idx] != "\n":
-                    chars[idx] = " "
-            raw_body_start = None
-
-    if raw_body_start is not None:
-        for idx in range(raw_body_start, len(chars)):
-            if chars[idx] != "\n":
-                chars[idx] = " "
-
-    return "".join(chars)
-
-
 def check_nested_delimiters(template: str) -> List[SyntaxError]:
     """
     Check for nested {{ }} inside {{ }} or {% %}.
@@ -290,7 +259,7 @@ def check_tag_logic_pairing(lines: List[str]) -> List[SyntaxError]:
         'raw': 'endraw'
     }
     
-    tag_pattern = r'\{%\s*(\w+)'
+    tag_pattern = r'\{%-?\s*(\w+)'
 
     for line_num, line in enumerate(lines, 1):
         for match in re.finditer(tag_pattern, line):
@@ -450,16 +419,15 @@ def analyze_template(template: str) -> List[SyntaxError]:
     """
     Execute all rule checks.
     """
-    syntax_template = mask_raw_blocks(template)
-    lines = syntax_template.split('\n')
+    lines = template.split('\n')
     errors = []
     
-    errors.extend(check_nested_delimiters(syntax_template))
-    errors.extend(check_delimiter_mismatch(syntax_template))
+    errors.extend(check_nested_delimiters(template))
+    errors.extend(check_delimiter_mismatch(template))
     errors.extend(check_tag_logic_pairing(lines))
     errors.extend(check_property_access(lines))
     errors.extend(check_extends_position(lines))
-    errors.extend(check_html_comments(syntax_template))
+    errors.extend(check_html_comments(template))
     
     return errors
 
