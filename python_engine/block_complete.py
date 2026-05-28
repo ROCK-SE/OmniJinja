@@ -17,22 +17,43 @@ class JinjaBlockExtractor:
         template_dir (Optional[Path]): The base directory where templates are located.
         env (Environment): The Jinja2 environment used for parsing ASTs.
     """
-    def __init__(self, template_dir: str):
+    def __init__(self, template_dir: str, current_template_path: str = "", workspace_root: str = ""):
         self.template_dir = Path(template_dir) if template_dir else None
+        self.current_template_path = Path(current_template_path) if current_template_path else None
+        self.workspace_root = Path(workspace_root) if workspace_root else None
         self.env = Environment()
 
     def _read_template(self, rel_path: str) -> str:
-        
-        if not self.template_dir:
-            return ""
-        full_path = self.template_dir / rel_path
-        if full_path.exists() and full_path.is_file():
-            try:
-                with open(full_path, "r", encoding="utf-8") as f:
-                    return f.read()
-            except Exception:
-                pass
+        for full_path in self._resolve_template_candidates(rel_path):
+            if full_path.exists() and full_path.is_file():
+                try:
+                    with open(full_path, "r", encoding="utf-8") as f:
+                        return f.read()
+                except Exception:
+                    pass
         return ""
+
+    def _resolve_template_candidates(self, rel_path: str) -> list:
+        template_path = Path(rel_path)
+        if template_path.is_absolute():
+            return [template_path]
+
+        candidates = []
+        if self.current_template_path:
+            candidates.append(self.current_template_path.parent / template_path)
+        if self.template_dir:
+            candidates.append(self.template_dir / template_path)
+        if self.workspace_root:
+            candidates.append(self.workspace_root / template_path)
+
+        seen = set()
+        unique_candidates = []
+        for candidate in candidates:
+            normalized = str(candidate)
+            if normalized not in seen:
+                seen.add(normalized)
+                unique_candidates.append(candidate)
+        return unique_candidates
 
     def get_inherited_blocks(self, current_template_code: str) -> list:
         """

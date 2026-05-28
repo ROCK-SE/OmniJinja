@@ -80,6 +80,10 @@ let isJinjaParsing = false;
 /** Collection to manage and render wavy underlines for syntax errors and warnings */
 let diagnosticCollection: vscode.DiagnosticCollection;
 
+const COMPLETION_TRIGGER_CHARS = [
+    '{', ' ', '|', '.', 's'
+];
+
 
 
 function getTemplateKey(absolutePath: string): string {
@@ -174,7 +178,27 @@ function findTemplateKey<T>(registry: Map<string, T>, templateName: string) {
             return key;
         }
     }
+    for (const key of registry.keys()) {
+        const normalizedKey = normalizeTemplateName(key);
+        if (normalizedKey.endsWith(`/${normalized}`) || normalized.endsWith(`/${normalizedKey}`)) {
+            return key;
+        }
+    }
     return normalized;
+}
+
+function getRegistryValue<T>(registry: Map<string, T>, templateName: string) {
+    return registry.get(findTemplateKey(registry, templateName));
+}
+
+function getCompletionChildren(schemaNode: any) {
+    if (!schemaNode || typeof schemaNode !== 'object') {
+        return undefined;
+    }
+    if (schemaNode.__is_iterable__ && schemaNode.__element__ && typeof schemaNode.__element__ === 'object') {
+        return schemaNode.__element__;
+    }
+    return schemaNode;
 }
 
 function getBackendContextForTemplate(templateName: string) {
@@ -250,12 +274,26 @@ function hasKnownSchemaChildren(schemaNode: any) {
         return false;
     }
 
-    const metadataKeys = new Set(['def_line', 'args', 'signature', 'docstring']);
+    const metadataKeys = new Set(['def_line', 'args', 'signature', 'docstring', 'error']);
     return Object.keys(schemaNode).some(key => !key.startsWith('__') && !metadataKeys.has(key));
 }
 
 function isGenericSchemaLeaf(schemaNode: any) {
     return !!schemaNode && typeof schemaNode === 'object' && '__type__' in schemaNode && !hasKnownSchemaChildren(schemaNode);
+}
+
+function getSchemaChild(schemaNode: any, key: string) {
+    if (!schemaNode || typeof schemaNode !== 'object') {
+        return undefined;
+    }
+    if (key in schemaNode) {
+        return schemaNode[key];
+    }
+    const elementSchema = schemaNode.__element__;
+    if (elementSchema && typeof elementSchema === 'object' && key in elementSchema) {
+        return elementSchema[key];
+    }
+    return undefined;
 }
 
 function isRequirementSatisfied(requirementNode: any, schemaNode: any): boolean {
@@ -290,7 +328,10 @@ function isRequirementSatisfied(requirementNode: any, schemaNode: any): boolean 
         return true;
     }
 
-    return childKeys.every(key => key in schemaNode && isRequirementSatisfied(requirementNode[key], schemaNode[key]));
+    return childKeys.every(key => {
+        const childSchema = getSchemaChild(schemaNode, key);
+        return childSchema !== undefined && isRequirementSatisfied(requirementNode[key], childSchema);
+    });
 }
 
 function pruneRequirementsSatisfiedBySchema(requirements: any, schema: any): any {
@@ -305,7 +346,7 @@ function pruneRequirementsSatisfiedBySchema(requirements: any, schema: any): any
             continue;
         }
 
-        const schemaNode = schema[key];
+        const schemaNode = getSchemaChild(schema, key);
         if (isRequirementSatisfied(requirement, schemaNode)) {
             continue;
         }
@@ -343,10 +384,11 @@ function resolveSchemaPath(context: any, pathParts: string[]) {
         if (isGenericSchemaLeaf(current)) {
             return current;
         }
-        if (!current || typeof current !== 'object' || !(part in current)) {
+        const child = getSchemaChild(current, part);
+        if (child === undefined) {
             return undefined;
         }
-        current = current[part];
+        current = child;
     }
     return current;
 }
@@ -520,15 +562,12 @@ export async function activate(context: vscode.ExtensionContext) {
             }
         }
 
-        const filesToParse = pyFiles.filter(uri => {
-            try {
-                const content = fs.readFileSync(uri.fsPath, 'utf-8');
-                return content.includes('flask') || content.includes('jinja');
-            } catch(e) { return false; }
-        });
-
-        for (const file of filesToParse) parseQueue.push(file.fsPath);
-        for (const file of allTemplateFiles) jinjaParseQueue.push(file.fsPath);
+        for (const file of pyFiles) {
+            parseQueue.push(file.fsPath);
+        }
+        for (const file of allTemplateFiles) {
+            jinjaParseQueue.push(file.fsPath);
+        }
 
         processQueue(pythonEnginePath, workspaceRoot, storagePath);
         processJinjaQueue(pythonEnginePath, workspaceRoot, storagePath);
@@ -619,7 +658,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
             const getTemplateExports = (tplName: string) => {
                 const exports: any = {};
-                const internal = internalJinjaRegistry.get(tplName);
+                const internal = getRegistryValue(internalJinjaRegistry, tplName);
                 if (internal) {
                     for (const key in internal) {
                         if (key !== 'globals' && key !== 'scoped' && key !== 'dependencies') {
@@ -635,7 +674,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 return exports;
             };
 
-            const deps = templateDependenciesRegistry.get(templateName);
+            const deps = getRegistryValue(templateDependenciesRegistry, templateName);
             if (deps) {
                 // {% extends '...' %}
                 if (deps.extends) {
@@ -672,12 +711,12 @@ export async function activate(context: vscode.ExtensionContext) {
                 }
             }
 
-            const pySourcesMap = templateRegistry.get(templateName);
+            const pySourcesMap = getRegistryValue(templateRegistry, templateName);
             if (pySourcesMap) {
                 for (const ctx of pySourcesMap.values()) Object.assign(mergedContext, ctx);
             }
 
-            const internalCtx = internalJinjaRegistry.get(templateName);
+            const internalCtx = getRegistryValue(internalJinjaRegistry, templateName);
             if (internalCtx) {
                 // A. Globals (e.g., {% set %})
                 if (internalCtx.globals) {
@@ -708,7 +747,58 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         mergeContextRecursively(currentHtmlName, true);
+        mergeLiveLoopContext(document, position, mergedContext);
         return mergedContext;
+    }
+
+    function mergeLiveLoopContext(document: vscode.TextDocument, position: vscode.Position, context: any) {
+        const prefixRange = new vscode.Range(new vscode.Position(0, 0), position);
+        const textBeforeCursor = document.getText(prefixRange);
+        const lines = textBeforeCursor.split(/\r?\n/);
+        const loopStack: Array<{ names: string[] }> = [];
+
+        for (const line of lines) {
+            const tagPattern = /\{%-?\s*(for\s+.+?\s+in\s+[a-zA-Z_][\w.]*|endfor)\s*-?%\}/g;
+            let match: RegExpExecArray | null;
+            while ((match = tagPattern.exec(line)) !== null) {
+                const tagContent = match[1].trim();
+                if (tagContent === 'endfor') {
+                    const closed = loopStack.pop();
+                    if (closed) {
+                        for (const name of closed.names) {
+                            delete context[name];
+                        }
+                    }
+                    continue;
+                }
+
+                const forMatch = tagContent.match(/^for\s+(.+?)\s+in\s+([a-zA-Z_][\w.]*)$/);
+                if (!forMatch) {
+                    continue;
+                }
+
+                const targetNames = forMatch[1]
+                    .split(',')
+                    .map(name => name.trim())
+                    .filter(name => /^[a-zA-Z_]\w*$/.test(name));
+                const iterPath = forMatch[2].split('.');
+                const iterSchema = resolveSchemaPath(context, iterPath);
+                const elementSchema = getCompletionChildren(iterSchema) || { __type__: 'Any' };
+
+                for (const name of targetNames) {
+                    context[name] = elementSchema;
+                }
+                context.loop = {
+                    __type__: 'LoopObject',
+                    index: { __type__: 'Integer' },
+                    index0: { __type__: 'Integer' },
+                    first: { __type__: 'Boolean' },
+                    last: { __type__: 'Boolean' },
+                    length: { __type__: 'Integer' }
+                };
+                loopStack.push({ names: targetNames });
+            }
+        }
     }
 
 
@@ -835,8 +925,9 @@ export async function activate(context: vscode.ExtensionContext) {
                             }
                         }
 
-                        if (currentLevel && typeof currentLevel === 'object') {
-                            for (const [key, val] of Object.entries(currentLevel)) {
+                        const completionLevel = getCompletionChildren(currentLevel);
+                        if (completionLevel && typeof completionLevel === 'object') {
+                            for (const [key, val] of Object.entries(completionLevel)) {
                                 // Filter out internal metadata keys
                                 if (['__type__', 'def_line', 'args', 'signature', '__is_iterable__', '__element__'].includes(key)) continue;
 
@@ -899,7 +990,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 return undefined;
             }
         },
-        '{', ' ', '|', '.', 's' // Trigger characters
+        ...COMPLETION_TRIGGER_CHARS
     );
 
     const templatePathProvider = vscode.languages.registerCompletionItemProvider(
@@ -1581,7 +1672,8 @@ function checkDeep(pathStr: string, demandNode: any, supplyNode: any, templateNa
             continue;
         }
 
-        if (!supplyNode || typeof supplyNode !== 'object' || !(key in supplyNode)) {
+        const childSupply = getSchemaChild(supplyNode, key);
+        if (childSupply === undefined) {
             const range = new vscode.Range(lineNum, 0, lineNum, 50);
             diagnostics.push(new vscode.Diagnostic(
                 range,
@@ -1589,7 +1681,7 @@ function checkDeep(pathStr: string, demandNode: any, supplyNode: any, templateNa
                 vscode.DiagnosticSeverity.Warning
             ));
         } else {
-            checkDeep(`${pathStr}.${key}`, val, supplyNode[key], templateName, lineNum, diagnostics);
+            checkDeep(`${pathStr}.${key}`, val, childSupply, templateName, lineNum, diagnostics);
         }
     }
 }

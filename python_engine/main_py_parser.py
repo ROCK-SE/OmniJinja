@@ -16,7 +16,13 @@ try:
     from import_infer import has_flask_or_jinja_import
 except ImportError:
     def has_flask_or_jinja_import(code: str) -> bool:
-        return 'flask' in code.lower() or 'jinja' in code.lower()
+        lower_code = code.lower()
+        return (
+            'flask' in lower_code
+            or 'jinja' in lower_code
+            or 'render_template' in lower_code
+            or '.render(' in lower_code
+        )
 
 from parse_render import FlaskTemplateVisitor
 from jedi_infer import JediPropertyExtractor
@@ -34,10 +40,10 @@ def main():
     storage_path = sys.argv[3]
 
     # Read the live source code directly from standard input memory stream
-    source_code = sys.stdin.read()
+    source_code = sys.stdin.read().lstrip('\ufeff')
 
     if not has_flask_or_jinja_import(source_code):
-        print(f"Skipped: {os.path.basename(target_py_file)} does not import flask/jinja2.")
+        print(f"Skipped: {os.path.basename(target_py_file)} has no static template-rendering signals.")
         sys.exit(0)
    
     try:

@@ -10,6 +10,11 @@ from jinja2.visitor import NodeVisitor
 from jinja2.filters import FILTERS
 from typing import List, Dict, Any
 
+STANDARD_METHODS = {
+    'upper', 'lower', 'capitalize', 'replace', 'split', 'strip', 'startswith', 'endswith',
+    'keys', 'values', 'items', 'get', 'append', 'extend', 'pop', 'index', 'count', 'format'
+}
+
 class JinjaSemanticLinter(NodeVisitor):
     """
     An AST Visitor that traverses Jinja2 templates to lint variable scoping.
@@ -36,7 +41,10 @@ class JinjaSemanticLinter(NodeVisitor):
         self.scope_stack = [self.backend_schema.copy()]
         
         # Standard Jinja2 built-in globals that should never trigger an 'undefined' warning
-        self.BUILTIN_GLOBALS = {'range', 'dict', 'lipsum', 'super', 'cycler', 'joiner', 'namespace'}
+        self.BUILTIN_GLOBALS = {
+            'range', 'dict', 'lipsum', 'super', 'cycler', 'joiner', 'namespace',
+            'url_for', 'get_flashed_messages', 'config', 'request', 'session', 'g'
+        }
         
         # Jinja2 built-in filters + our Python backend custom filters
         self.BUILTIN_FILTERS = set(FILTERS.keys())
@@ -50,6 +58,8 @@ class JinjaSemanticLinter(NodeVisitor):
             return [node.name]
         elif isinstance(node, nodes.Getattr):
             base = self._extract_path(node.node)
+            if node.attr in STANDARD_METHODS:
+                return base
             return base + [node.attr] if base else []
         return []
 
@@ -169,6 +179,8 @@ class JinjaSemanticLinter(NodeVisitor):
             # Lists are iterable
             is_iterable = True
         elif isinstance(current_level, dict):
+            if current_level.get("__type__") == "Any":
+                return
             # Check __is_iterable__ marker
             if current_level.get("__is_iterable__"):
                 is_iterable = True
@@ -207,6 +219,10 @@ class JinjaSemanticLinter(NodeVisitor):
         local_scope = {"loop": {"__type__": "LoopObject"}}
         if isinstance(node.target, nodes.Name):
             local_scope[node.target.name] = {"__type__": "Any"}
+        elif isinstance(node.target, nodes.Tuple):
+            for item in node.target.items:
+                if isinstance(item, nodes.Name):
+                    local_scope[item.name] = {"__type__": "Any"}
             
         self.scope_stack.append(local_scope)
         for child in node.body: 

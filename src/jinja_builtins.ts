@@ -128,6 +128,17 @@ export const BUILTIN_TESTS: Record<string, any> = {
  */
 export const BUILTIN_GLOBALS: Record<string, any> = {
     "range": { signature: "range([start], stop, [step])", description: "Return a list containing an arithmetic progression of integers.", snippet: "range(${1:stop})" },
+    "dict": { signature: "dict(...)", description: "Create a dictionary object.", snippet: "dict()" },
+    "cycler": { signature: "cycler(...items)", description: "Cycle through values across repeated template calls.", snippet: "cycler(${1:items})" },
+    "joiner": { signature: "joiner(separator=', ')", description: "Return a helper that emits a separator after its first call.", snippet: "joiner()" },
+    "namespace": { signature: "namespace(...)", description: "Create a mutable namespace object for template state.", snippet: "namespace()" },
+    "lipsum": { signature: "lipsum(...)", description: "Generate placeholder lorem ipsum text.", snippet: "lipsum()" },
+    "url_for": { signature: "url_for(endpoint, **values)", description: "Flask helper that builds a URL for an endpoint.", snippet: "url_for('${1:endpoint}')" },
+    "get_flashed_messages": { signature: "get_flashed_messages(...)", description: "Flask helper that returns flashed messages.", snippet: "get_flashed_messages()" },
+    "config": { signature: "config", description: "Flask application configuration exposed to templates." },
+    "request": { signature: "request", description: "The current Flask request object exposed to templates." },
+    "session": { signature: "session", description: "The current Flask session object exposed to templates." },
+    "g": { signature: "g", description: "Flask's request-local global namespace exposed to templates." },
     "loop": { signature: "loop", description: "The loop object available inside for-loops, containing index, length, etc." },
     "super": { signature: "super()", description: "Render the contents of the parent block.", snippet: "super()" }
 };

@@ -5,7 +5,16 @@ This module leverages the Jedi library to perform deep static analysis on
 Python source code. It extracts type information, properties, and method 
 signatures to provide rich intellisense for variables passed into Jinja2 templates.
 """
+import warnings
+
 import jedi
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"Tried to save a file to .*",
+    category=Warning,
+    module=r"parso\.cache",
+)
 
 class JediPropertyExtractor:
     def __init__(self, source_code: str, max_depth: int = 2):
@@ -72,7 +81,11 @@ class JediPropertyExtractor:
                 line = var_info.get('line')
                 column = var_info.get('column')
                 code_str = var_info.get('code', '') 
+                schema_hint = var_info.get('schema_hint')
                 
+                if schema_hint:
+                    enriched_context[var_name] = schema_hint
+                    continue
                 if not code_str:
                     enriched_context[var_name] = {"__type__": "Any", "__is_iterable__": False}
                     continue
@@ -87,7 +100,8 @@ class JediPropertyExtractor:
                     continue
 
                 try:
-                    inferences = self.script.infer(line, column)
+                    infer_column = column + len(code_str) if column is not None else None
+                    inferences = self.script.infer(line, infer_column)
                     if inferences:
                         inf = inferences[0]
                         if inf.name in ['list', 'tuple', 'set']:

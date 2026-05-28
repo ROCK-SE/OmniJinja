@@ -194,16 +194,27 @@ def _requirement_satisfied(requirement_node, schema_node):
         return True
 
     for key in child_keys:
-        if key not in schema_node:
+        child_schema = _schema_child(schema_node, key)
+        if child_schema is None:
             return False
-        if not _requirement_satisfied(requirement_node[key], schema_node[key]):
+        if not _requirement_satisfied(requirement_node[key], child_schema):
             return False
     return True
+
+def _schema_child(schema_node, key):
+    if not isinstance(schema_node, dict):
+        return None
+    if key in schema_node:
+        return schema_node[key]
+    element_schema = schema_node.get("__element__")
+    if isinstance(element_schema, dict) and key in element_schema:
+        return element_schema[key]
+    return None
 
 def _has_known_schema_children(schema_node):
     if not isinstance(schema_node, dict):
         return False
-    metadata_keys = {"def_line", "args", "signature", "docstring"}
+    metadata_keys = {"def_line", "args", "signature", "docstring", "error"}
     return any(not key.startswith("__") and key not in metadata_keys for key in schema_node.keys())
 
 def _is_generic_schema_leaf(schema_node):
@@ -219,7 +230,7 @@ def prune_requirements_satisfied_by_schema(requirements, inherited_schema):
             pruned[key] = requirement
             continue
 
-        schema_node = inherited_schema.get(key)
+        schema_node = _schema_child(inherited_schema, key)
         if _requirement_satisfied(requirement, schema_node):
             continue
 
@@ -254,7 +265,7 @@ def main():
     output_schemas_dir = os.path.join(storage_path, "backend_schemas")
     jinja_schemas_dir = os.path.join(storage_path, "jinja_schemas")
 
-    template_code = sys.stdin.read()
+    template_code = sys.stdin.read().lstrip('\ufeff')
     code_lines = template_code.splitlines()
 
     target_template_name = _template_key_from_path(template_path)
@@ -275,7 +286,7 @@ def main():
         _merge_dict(inherited_template_exports, parent_exports)
         _merge_dict(backend_schema, parent_exports)
 
-    template_dir = os.path.dirname(template_path)
+    template_dir = _templates_root_from_path(template_path)
 
 
     def is_ignored(line_number):
@@ -291,7 +302,7 @@ def main():
         return False
 
     # 1. Metadata Extraction
-    block_extractor = JinjaBlockExtractor(template_dir)
+    block_extractor = JinjaBlockExtractor(template_dir, template_path, workspace_root)
     blocks = block_extractor.get_inherited_blocks(template_code)
 
     macro_extractor = JinjaMacroExtractor()

@@ -10,6 +10,11 @@ STANDARD_METHODS = {
     'keys', 'values', 'items', 'get', 'append', 'extend', 'pop', 'index', 'count', 'format'
 }
 
+BUILTIN_GLOBALS = {
+    'range', 'dict', 'lipsum', 'super', 'cycler', 'joiner', 'namespace',
+    'url_for', 'get_flashed_messages', 'config', 'request', 'session', 'g'
+}
+
 class JinjaExternalVariableExtractor(NodeVisitor):
     def __init__(self):
         self.variables_model = {}
@@ -34,6 +39,8 @@ class JinjaExternalVariableExtractor(NodeVisitor):
     def _record_path(self, path: list, is_callable: bool = False):
         if not path: return
         base_var = path[0]
+        if base_var in BUILTIN_GLOBALS:
+            return
         target_dict = None
         found_in_scope = False
         
@@ -118,6 +125,10 @@ class JinjaExternalVariableExtractor(NodeVisitor):
         local_scope = {"loop": None} 
         if isinstance(node.target, nodes.Name):
             local_scope[node.target.name] = element_sandbox
+        elif isinstance(node.target, nodes.Tuple):
+            for item in node.target.items:
+                if isinstance(item, nodes.Name):
+                    local_scope[item.name] = element_sandbox
         self.scope_stack.append(local_scope)
         for child in node.body: self.visit(child)
         self.scope_stack.pop()
