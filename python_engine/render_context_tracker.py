@@ -58,10 +58,6 @@ class LocalContextTracker:
 
     def schema_hint_for_node(self, node: ast.AST, current_function: str | None):
         if isinstance(node, ast.Name) and current_function:
-            name_schema = self.name_schemas[current_function].get(node.id)
-            if name_schema:
-                return name_schema
-
             list_schema = self.list_schemas[current_function].get(node.id)
             if list_schema:
                 return list_schema
@@ -73,6 +69,10 @@ class LocalContextTracker:
                     "__is_iterable__": True,
                     **self.schema_from_tracked_dict(dict_items),
                 }
+
+            name_schema = self.name_schemas[current_function].get(node.id)
+            if name_schema:
+                return name_schema
 
         if isinstance(node, ast.Dict):
             return {
