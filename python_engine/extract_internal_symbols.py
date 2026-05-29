@@ -21,11 +21,28 @@ class JinjaSymbolExtractor(NodeVisitor):
         self.scope_stack = [{}]  # Use scope stack instead of flat dict
         
         self.LOOP_PROPERTIES = {
-            "index": {"__type__": "Integer"}, "index0": {"__type__": "Integer"},
-            "revindex": {"__type__": "Integer"}, "revindex0": {"__type__": "Integer"},
-            "first": {"__type__": "Boolean"}, "last": {"__type__": "Boolean"},
-            "length": {"__type__": "Integer"}, "depth": {"__type__": "Integer"},
-            "depth0": {"__type__": "Integer"}
+            "__type__": "LoopObject",
+            "index": {"__type__": "Integer"},
+            "index0": {"__type__": "Integer"},
+            "revindex": {"__type__": "Integer"},
+            "revindex0": {"__type__": "Integer"},
+            "first": {"__type__": "Boolean"},
+            "last": {"__type__": "Boolean"},
+            "length": {"__type__": "Integer"},
+            "cycle": {
+                "__type__": "Function",
+                "signature": "cycle(...items)",
+                "args": ["...items"]
+            },
+            "depth": {"__type__": "Integer"},
+            "depth0": {"__type__": "Integer"},
+            "previtem": {"__type__": "Any"},
+            "nextitem": {"__type__": "Any"},
+            "changed": {
+                "__type__": "Function",
+                "signature": "changed(*val)",
+                "args": ["value"]
+            }
         }
 
     def _extract_path(self, node) -> list:
@@ -34,7 +51,28 @@ class JinjaSymbolExtractor(NodeVisitor):
         elif isinstance(node, nodes.Getattr):
             base = self._extract_path(node.node)
             return base + [node.attr] if base else []
+        elif isinstance(node, nodes.Filter):
+            return self._extract_path(node.node)
+        elif isinstance(node, nodes.Call) and isinstance(node.node, nodes.Getattr):
+            return self._extract_path(node.node.node)
         return []
+
+    def _extract_target_names(self, target) -> list:
+        if isinstance(target, nodes.Name):
+            return [target.name]
+        if isinstance(target, nodes.Tuple):
+            return [item.name for item in target.items if isinstance(item, nodes.Name)]
+        return []
+
+    def _loop_target_schema(self, iter_node, iter_type_data: dict, target_count: int, target_index: int) -> dict:
+        if target_count > 1:
+            if isinstance(iter_node, nodes.Filter) and iter_node.name == "dictsort" and target_index == 0:
+                return {"__type__": "String"}
+            return {"__type__": "Any"}
+        return iter_type_data if iter_type_data else {"__type__": "Any"}
+
+    def _extract_macro_args(self, args) -> list:
+        return [arg.name for arg in args if isinstance(arg, nodes.Name)]
 
     def _resolve_schema(self, path: list, is_iterable=False) -> dict:
         """
@@ -105,8 +143,9 @@ class JinjaSymbolExtractor(NodeVisitor):
 
         # Create a new local scope for the loop with the loop variable and 'loop' object
         local_scope = {"loop": self.LOOP_PROPERTIES}
-        if isinstance(node.target, nodes.Name):
-            local_scope[node.target.name] = iter_type_data if iter_type_data else {"__type__": "Any"}
+        target_names = self._extract_target_names(node.target)
+        for index, target_name in enumerate(target_names):
+            local_scope[target_name] = self._loop_target_schema(node.iter, iter_type_data, len(target_names), index)
             
         # Calculate spatial scope range (start and end line)
         start_line = node.lineno
@@ -121,6 +160,24 @@ class JinjaSymbolExtractor(NodeVisitor):
             
         self.scope_stack.append(local_scope)
         for child in node.body: 
+            self.visit(child)
+        self.scope_stack.pop()
+
+    def visit_Macro(self, node: nodes.Macro):
+        arg_names = self._extract_macro_args(node.args)
+        local_scope = {
+            arg_name: {"__type__": "Any"}
+            for arg_name in arg_names
+        }
+
+        self.extracted_data["scoped"].append({
+            "type": "macro",
+            "scope_range": {"start_line": node.lineno, "end_line": self._get_block_end_line(node)},
+            "vars": local_scope
+        })
+
+        self.scope_stack.append(local_scope)
+        for child in node.body:
             self.visit(child)
         self.scope_stack.pop()
 
@@ -141,17 +198,24 @@ class JinjaSymbolExtractor(NodeVisitor):
             self.extracted_data["globals"][var_name] = schema
             self.scope_stack[0][var_name] = schema
             
-        for_pattern = re.compile(r'\{%-?\s*for\s+([a-zA-Z0-9_]+)\s+in\s+([a-zA-Z0-9_.]+)')
+        for_pattern = re.compile(r'\{%-?\s*for\s+([a-zA-Z0-9_, \t]+?)\s+in\s+([a-zA-Z0-9_.]+)(?:\s*\|\s*([a-zA-Z0-9_]+))?')
         for match in for_pattern.finditer(template_code):
-            var_name, path_str = match.groups()
+            target_str, path_str, filter_name = match.groups()
+            target_names = [
+                name.strip()
+                for name in target_str.split(',')
+                if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name.strip())
+            ]
             iter_data = self._resolve_schema(path_str.split('.'), is_iterable=True)
             
             start_line = template_code[:match.start()].count('\n') + 1
             
-            scoped_vars = {
-                var_name: iter_data if iter_data else {"__type__": "Any"},
-                "loop": self.LOOP_PROPERTIES
-            }
+            scoped_vars = {"loop": self.LOOP_PROPERTIES}
+            for index, target_name in enumerate(target_names):
+                if len(target_names) > 1:
+                    scoped_vars[target_name] = {"__type__": "String"} if filter_name == "dictsort" and index == 0 else {"__type__": "Any"}
+                else:
+                    scoped_vars[target_name] = iter_data if iter_data else {"__type__": "Any"}
             
             text_after_for = template_code[match.end():]
             endfor_match = re.search(r'\{%-?\s*endfor\s*-?%\}', text_after_for)
@@ -239,6 +303,24 @@ class JinjaSymbolExtractor(NodeVisitor):
                 "docstring": "Macro (Fallback)",
                 "def_line": template_code[:match.start()].count('\n') + 1
             }
+
+            start_line = template_code[:match.start()].count('\n') + 1
+            text_after_macro = template_code[match.end():]
+            endmacro_match = re.search(r'\{%-?\s*endmacro\s*-?%\}', text_after_macro)
+            if endmacro_match:
+                lines_between = text_after_macro[:endmacro_match.end()].count('\n')
+                end_line = start_line + lines_between
+            else:
+                end_line = 999999
+
+            self.extracted_data["scoped"].append({
+                "type": "macro_fallback",
+                "scope_range": {"start_line": start_line, "end_line": end_line},
+                "vars": {
+                    arg_name: {"__type__": "Any"}
+                    for arg_name in args_list
+                }
+            })
 
     def extract(self, template_code: str) -> dict:
         try:

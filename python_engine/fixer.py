@@ -71,6 +71,17 @@ def find_insert_position_for_end_tag(lines: List[str], start_line_idx: int, star
     return last_non_empty
 
 
+def replace_at_column(line: str, col: int, original: str, replacement: str) -> str:
+    """
+    Replace text at a 1-based diagnostic column. Falls back to the first occurrence
+    only when the reported column no longer points at the expected text.
+    """
+    idx = max(col - 1, 0)
+    if line[idx:idx + len(original)] == original:
+        return line[:idx] + replacement + line[idx + len(original):]
+    return line.replace(original, replacement, 1)
+
+
 def fix_template(original_template: str, errors: List[SyntaxError]) -> str:
     """
     Generate a fixed template based on detected errors.
@@ -136,7 +147,7 @@ def fix_template(original_template: str, errors: List[SyntaxError]) -> str:
                     if line.strip() == error.original:
                         lines_to_delete.add(line_idx)
                     else:
-                        line = line.replace(error.original, "", 1).rstrip()
+                        line = replace_at_column(line, error.col, error.original, "").rstrip()
                 
                 # Handle mismatched delimiters/tags
                 elif "mismatch" in error.description.lower():
@@ -144,7 +155,7 @@ def fix_template(original_template: str, errors: List[SyntaxError]) -> str:
                         match = re.search(r'Change .+ to (\S+)$', error.suggestion)
                         if match:
                             correct_str = match.group(1)
-                            line = line.replace(error.original, correct_str, 1)
+                            line = replace_at_column(line, error.col, error.original, correct_str)
                 
                 # Handle unclosed tags/delimiters
                 elif "Unclosed" in error.description:

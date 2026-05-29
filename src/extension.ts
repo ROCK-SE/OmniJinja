@@ -756,9 +756,11 @@ export async function activate(context: vscode.ExtensionContext) {
         const textBeforeCursor = document.getText(prefixRange);
         const lines = textBeforeCursor.split(/\r?\n/);
         const loopStack: Array<{ names: string[] }> = [];
+        const macroStack: Array<{ names: string[] }> = [];
+        const anySchema = { __type__: 'Any' };
 
         for (const line of lines) {
-            const tagPattern = /\{%-?\s*(for\s+.+?\s+in\s+[a-zA-Z_][\w.]*|endfor)\s*-?%\}/g;
+            const tagPattern = /\{%-?\s*(for\s+.+?\s+in\s+.+?|endfor|macro\s+.+?\(.*?\)|endmacro)\s*-?%\}/g;
             let match: RegExpExecArray | null;
             while ((match = tagPattern.exec(line)) !== null) {
                 const tagContent = match[1].trim();
@@ -771,8 +773,31 @@ export async function activate(context: vscode.ExtensionContext) {
                     }
                     continue;
                 }
+                if (tagContent === 'endmacro') {
+                    const closed = macroStack.pop();
+                    if (closed) {
+                        for (const name of closed.names) {
+                            delete context[name];
+                        }
+                    }
+                    continue;
+                }
 
-                const forMatch = tagContent.match(/^for\s+(.+?)\s+in\s+([a-zA-Z_][\w.]*)$/);
+                const macroMatch = tagContent.match(/^macro\s+[a-zA-Z_]\w*\s*\((.*?)\)$/);
+                if (macroMatch) {
+                    const argNames = macroMatch[1]
+                        .split(',')
+                        .map(arg => arg.split('=')[0].trim())
+                        .filter(name => /^[a-zA-Z_]\w*$/.test(name));
+
+                    for (const name of argNames) {
+                        context[name] = anySchema;
+                    }
+                    macroStack.push({ names: argNames });
+                    continue;
+                }
+
+                const forMatch = tagContent.match(/^for\s+(.+?)\s+in\s+(.+)$/);
                 if (!forMatch) {
                     continue;
                 }
@@ -781,20 +806,46 @@ export async function activate(context: vscode.ExtensionContext) {
                     .split(',')
                     .map(name => name.trim())
                     .filter(name => /^[a-zA-Z_]\w*$/.test(name));
-                const iterPath = forMatch[2].split('.');
+                const iterExpression = forMatch[2].trim();
+                const iterPathMatch = iterExpression.match(/^([a-zA-Z_][\w.]*)/);
+                if (!iterPathMatch) {
+                    continue;
+                }
+
+                const iterPath = iterPathMatch[1].split('.');
                 const iterSchema = resolveSchemaPath(context, iterPath);
                 const elementSchema = getCompletionChildren(iterSchema) || { __type__: 'Any' };
 
-                for (const name of targetNames) {
-                    context[name] = elementSchema;
+                for (const [index, name] of targetNames.entries()) {
+                    if (targetNames.length > 1) {
+                        context[name] = /\|\s*dictsort\b/.test(iterExpression) && index === 0 ? { __type__: 'String' } : anySchema;
+                    } else {
+                        context[name] = elementSchema;
+                    }
                 }
                 context.loop = {
                     __type__: 'LoopObject',
                     index: { __type__: 'Integer' },
                     index0: { __type__: 'Integer' },
+                    revindex: { __type__: 'Integer' },
+                    revindex0: { __type__: 'Integer' },
                     first: { __type__: 'Boolean' },
                     last: { __type__: 'Boolean' },
-                    length: { __type__: 'Integer' }
+                    length: { __type__: 'Integer' },
+                    cycle: {
+                        __type__: 'Function',
+                        signature: 'cycle(...items)',
+                        args: ['...items']
+                    },
+                    depth: { __type__: 'Integer' },
+                    depth0: { __type__: 'Integer' },
+                    previtem: { __type__: 'Any' },
+                    nextitem: { __type__: 'Any' },
+                    changed: {
+                        __type__: 'Function',
+                        signature: 'changed(*val)',
+                        args: ['value']
+                    }
                 };
                 loopStack.push({ names: targetNames });
             }

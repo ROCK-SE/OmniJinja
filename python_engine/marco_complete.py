@@ -26,7 +26,7 @@ class JinjaMacroExtractor:
             args = [arg.name for arg in node.args if isinstance(arg, nodes.Name)]
             
             macros[macro_name] = {
-                "__type__": "Marco",
+                "__type__": "Macro",
                 "args": args,
                 "signature": f"{macro_name}({', '.join(args)})",
                 "docstring": f"Jinja Macro: {macro_name}" 

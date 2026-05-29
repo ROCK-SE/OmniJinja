@@ -26,11 +26,35 @@ export const BUILTIN_FILTERS: Record<string, any> = {
     "replace": { signature: "replace(s, old, new, count=None)", description: "Replace occurrences of a substring.", caveat: "Case-sensitive; regex is not supported." },
     "tojson": { signature: "tojson(value, indent=None)", description: "Serialize an object to a JSON string.", caveat: "Not all Python objects are JSON-serializable." },
     "truncate": { signature: "truncate(s, length=255, ...)", description: "Truncate a string to a given length.", caveat: "HTML tags are not considered." },
+    "trim": { signature: "trim(value, chars=None)", description: "Strip leading and trailing characters.", caveat: "Defaults to stripping whitespace." },
+    "striptags": { signature: "striptags(value)", description: "Strip SGML/XML tags and normalize whitespace.", caveat: "Returns plain text." },
+    "title": { signature: "title(s)", description: "Return a title-cased version of the string.", caveat: "Only applicable to strings." },
+    "capitalize": { signature: "capitalize(s)", description: "Capitalize a string.", caveat: "Only applicable to strings." },
+    "center": { signature: "center(value, width=80)", description: "Center a value in a field of the given width.", caveat: "Pads with spaces." },
+    "indent": { signature: "indent(s, width=4, first=False, blank=False)", description: "Indent lines in a string.", caveat: "Blank and first-line behavior is configurable." },
+    "wordcount": { signature: "wordcount(s)", description: "Count words in a string.", caveat: "Uses Jinja's word matching rules." },
+    "wordwrap": { signature: "wordwrap(s, width=79, ...)", description: "Wrap text to a given line width.", caveat: "Preserves paragraphs." },
     "unique": { signature: "unique(value, ...)", description: "Return unique items from a sequence.", caveat: "Returns an iterator." },
     "map": { signature: "map(value, attribute)", description: "Apply a filter or extract an attribute.", caveat: "Missing attributes yield undefined." },
+    "select": { signature: "select(value, test=None, ...)", description: "Filter a sequence by applying a test.", caveat: "Returns an iterator." },
+    "reject": { signature: "reject(value, test=None, ...)", description: "Filter a sequence by rejecting items that pass a test.", caveat: "Returns an iterator." },
     "selectattr": { signature: "selectattr(value, attr, test)", description: "Filter objects by attribute value.", caveat: "Objects without the attribute are skipped." },
+    "rejectattr": { signature: "rejectattr(value, attr, test)", description: "Filter objects by rejecting items whose attribute passes a test.", caveat: "Returns an iterator." },
+    "attr": { signature: "attr(obj, name)", description: "Get an attribute of an object.", caveat: "Does not fall back to item lookup." },
+    "items": { signature: "items(mapping)", description: "Return an iterator over key/value pairs.", caveat: "Returns an empty iterator for undefined values." },
     "dictsort": { signature: "dictsort(value, ...)", description: "Sort a dictionary by key or value.", caveat: "Returns a list of (key, value) tuples." },
+    "batch": { signature: "batch(value, linecount, fill_with=None)", description: "Group a sequence into batches.", caveat: "Useful for rows and columns." },
+    "slice": { signature: "slice(value, slices, fill_with=None)", description: "Slice an iterator into multiple columns.", caveat: "May add fill values." },
+    "groupby": { signature: "groupby(value, attribute, default=None, case_sensitive=False)", description: "Group a sequence by an attribute.", caveat: "Sorts before grouping." },
+    "random": { signature: "random(seq)", description: "Return a random item from a sequence.", caveat: "Undefined for empty sequences." },
+    "round": { signature: "round(value, precision=0, method='common')", description: "Round a number to a given precision.", caveat: "Returns a float." },
+    "filesizeformat": { signature: "filesizeformat(value, binary=False)", description: "Format a number as a human-readable file size.", caveat: "Supports decimal or binary units." },
+    "pprint": { signature: "pprint(value)", description: "Pretty-print a variable for debugging.", caveat: "Intended for debugging output." },
+    "format": { signature: "format(value, *args, **kwargs)", description: "Apply printf-style string formatting.", caveat: "Prefer the format operator for simple cases." },
+    "urlize": { signature: "urlize(value, trim_url_limit=None, nofollow=False, ...)", description: "Convert URLs in plain text into links.", caveat: "Output may be markup." },
     "urlencode": { signature: "urlencode(value)", description: "URL-encode a string or dictionary.", caveat: "Dictionaries become query strings." },
+    "xmlattr": { signature: "xmlattr(d, autospace=True)", description: "Create an XML/HTML attribute string from a dictionary.", caveat: "Keys with invalid characters are rejected." },
+    "forceescape": { signature: "forceescape(value)", description: "Enforce HTML escaping.", caveat: "Can double-escape existing escaped text." },
     // Aliases
     "d": { signature: "default(...)", description: "Alias for 'default'.", caveat: "Same behavior." },
     "e": { signature: "escape(...)", description: "Alias for 'escape'.", caveat: "Same behavior." },
@@ -77,6 +101,18 @@ export const BUILTIN_TAGS: Record<string, any> = {
         caveat: "Included templates share the current context by default.",
         snippet: "include \"${1:template}\" %}"
     },
+    "import": {
+        syntax: "{% import template as name %}",
+        description: "Import macros from another template under a namespace.",
+        caveat: "Imported templates do not receive the current context unless requested.",
+        snippet: "import \"${1:template}\" as ${2:name} %}"
+    },
+    "from": {
+        syntax: "{% from template import name %}",
+        description: "Import selected macros or exported names from another template.",
+        caveat: "Use aliases to avoid name collisions.",
+        snippet: "from \"${1:template}\" import ${2:name} %}"
+    },
     "macro": {
         syntax: "{% macro name(args) %}...{% endmacro %}",
         description: "Define a reusable template function.", 
@@ -106,6 +142,38 @@ export const BUILTIN_TAGS: Record<string, any> = {
         description: "Render content verbatim without processing Jinja syntax.", 
         caveat: "Jinja syntax inside raw blocks is ignored entirely.",
         snippet: "raw %}\n\t$0\n{% endraw %}"
+    },
+    "autoescape": {
+        syntax: "{% autoescape true|false %}...{% endautoescape %}",
+        description: "Enable or disable autoescaping for a block.",
+        caveat: "Use cautiously when rendering HTML.",
+        snippet: "autoescape ${1:true} %}\n\t$0\n{% endautoescape %}"
+    },
+    "elif": {
+        syntax: "{% elif condition %}",
+        description: "Add another conditional branch inside an if block.",
+        caveat: "Only valid inside an if block.",
+        snippet: "elif ${1:condition} %}"
+    },
+    "else": {
+        syntax: "{% else %}",
+        description: "Add a fallback branch inside if or for blocks.",
+        caveat: "Only valid inside supported block tags.",
+        snippet: "else %}"
+    },
+    "endif": { syntax: "{% endif %}", description: "Close an if block.", caveat: "Must match an open if block.", snippet: "endif %}" },
+    "endfor": { syntax: "{% endfor %}", description: "Close a for block.", caveat: "Must match an open for block.", snippet: "endfor %}" },
+    "endblock": { syntax: "{% endblock %}", description: "Close a block tag.", caveat: "Must match an open block tag.", snippet: "endblock %}" },
+    "endmacro": { syntax: "{% endmacro %}", description: "Close a macro block.", caveat: "Must match an open macro tag.", snippet: "endmacro %}" },
+    "endcall": { syntax: "{% endcall %}", description: "Close a call block.", caveat: "Must match an open call tag.", snippet: "endcall %}" },
+    "endfilter": { syntax: "{% endfilter %}", description: "Close a filter block.", caveat: "Must match an open filter tag.", snippet: "endfilter %}" },
+    "endwith": { syntax: "{% endwith %}", description: "Close a with block.", caveat: "Must match an open with tag.", snippet: "endwith %}" },
+    "endraw": { syntax: "{% endraw %}", description: "Close a raw block.", caveat: "Must match an open raw tag.", snippet: "endraw %}" },
+    "endautoescape": {
+        syntax: "{% endautoescape %}",
+        description: "Close an autoescape block.",
+        caveat: "Must match an open autoescape tag.",
+        snippet: "endautoescape %}"
     }
 };
 
@@ -116,11 +184,42 @@ export const BUILTIN_TESTS: Record<string, any> = {
     "defined": { signature: "is defined", description: "Return true if the variable is defined." },
     "undefined": { signature: "is undefined", description: "Return true if the variable is undefined." },
     "none": { signature: "is none", description: "Return true if the variable is none." },
+    "boolean": { signature: "is boolean", description: "Return true if the object is a boolean." },
+    "true": { signature: "is true", description: "Return true if the object is true." },
+    "false": { signature: "is false", description: "Return true if the object is false." },
     "string": { signature: "is string", description: "Return true if the variable is a string." },
     "number": { signature: "is number", description: "Return true if the variable is a number." },
+    "integer": { signature: "is integer", description: "Return true if the object is an integer." },
+    "float": { signature: "is float", description: "Return true if the object is a float." },
     "iterable": { signature: "is iterable", description: "Return true if the object is iterable." },
+    "sequence": { signature: "is sequence", description: "Return true if the object is a sequence." },
+    "mapping": { signature: "is mapping", description: "Return true if the object is a mapping." },
+    "callable": { signature: "is callable", description: "Return true if the object can be called." },
+    "sameas": { signature: "is sameas(value)", description: "Return true if two objects are the same object." },
+    "escaped": { signature: "is escaped", description: "Return true if the value is already escaped." },
+    "lower": { signature: "is lower", description: "Return true if the value is lowercase." },
+    "upper": { signature: "is upper", description: "Return true if the value is uppercase." },
+    "divisibleby": { signature: "is divisibleby(num)", description: "Return true if the value is divisible by a number." },
     "even": { signature: "is even", description: "Return true if the variable is even." },
-    "odd": { signature: "is odd", description: "Return true if the variable is odd." }
+    "odd": { signature: "is odd", description: "Return true if the variable is odd." },
+    "eq": { signature: "is eq(value)", description: "Alias for equal comparison." },
+    "equalto": { signature: "is equalto(value)", description: "Alias for equal comparison." },
+    "ne": { signature: "is ne(value)", description: "Alias for not-equal comparison." },
+    "lt": { signature: "is lt(value)", description: "Alias for less-than comparison." },
+    "lessthan": { signature: "is lessthan(value)", description: "Alias for less-than comparison." },
+    "le": { signature: "is le(value)", description: "Alias for less-than-or-equal comparison." },
+    "gt": { signature: "is gt(value)", description: "Alias for greater-than comparison." },
+    "greaterthan": { signature: "is greaterthan(value)", description: "Alias for greater-than comparison." },
+    "ge": { signature: "is ge(value)", description: "Alias for greater-than-or-equal comparison." },
+    "==": { signature: "is ==(value)", description: "Alias for equal comparison." },
+    "!=": { signature: "is !=(value)", description: "Alias for not-equal comparison." },
+    "<": { signature: "is <(value)", description: "Alias for less-than comparison." },
+    "<=": { signature: "is <=(value)", description: "Alias for less-than-or-equal comparison." },
+    ">": { signature: "is >(value)", description: "Alias for greater-than comparison." },
+    ">=": { signature: "is >=(value)", description: "Alias for greater-than-or-equal comparison." },
+    "in": { signature: "is in(seq)", description: "Return true if the value is contained in a sequence." },
+    "filter": { signature: "is filter", description: "Return true if a filter exists by name." },
+    "test": { signature: "is test", description: "Return true if a test exists by name." }
 };
 
 /**
@@ -139,6 +238,8 @@ export const BUILTIN_GLOBALS: Record<string, any> = {
     "request": { signature: "request", description: "The current Flask request object exposed to templates." },
     "session": { signature: "session", description: "The current Flask session object exposed to templates." },
     "g": { signature: "g", description: "Flask's request-local global namespace exposed to templates." },
-    "loop": { signature: "loop", description: "The loop object available inside for-loops, containing index, length, etc." },
+    "true": { signature: "true", description: "Boolean true constant." },
+    "false": { signature: "false", description: "Boolean false constant." },
+    "none": { signature: "none", description: "Null/none constant." },
     "super": { signature: "super()", description: "Render the contents of the parent block.", snippet: "super()" }
 };
