@@ -61,7 +61,11 @@ class FlaskTemplateVisitor(ast.NodeVisitor):
     def is_render_call(self, node: ast.Call) -> bool:
         if isinstance(node.func, ast.Name) and node.func.id == "render_template":
             return True
+        if isinstance(node.func, ast.Name) and node.func.id == "TemplateResponse":
+            return True
         if isinstance(node.func, ast.Attribute) and node.func.attr == "render":
+            return True
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "TemplateResponse":
             return True
         return False
 
@@ -82,11 +86,15 @@ class FlaskTemplateVisitor(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
         self._collect_context_processor_globals(node)
+        self.context_tracker.track_function_definition(node)
 
         previous_function = self.current_function
         self.current_function = node.name
         self.generic_visit(node)
         self.current_function = previous_function
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
+        self.visit_FunctionDef(node)
 
     def _collect_context_processor_globals(self, node: ast.FunctionDef):
         for decorator in node.decorator_list:

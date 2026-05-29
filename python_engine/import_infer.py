@@ -28,7 +28,7 @@ def _call_name(node: ast.AST) -> str:
 
 def _looks_like_static_template_render(node: ast.Call) -> bool:
     name = _call_name(node.func)
-    if name not in {'render_template', 'render'}:
+    if name not in {'render_template', 'render', 'TemplateResponse'}:
         return False
 
     if any(_is_string_literal(arg) for arg in node.args[:2]):

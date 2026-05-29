@@ -16,6 +16,7 @@ class LocalContextTracker:
         self.dict_assignments = defaultdict(dict)
         self.list_schemas = defaultdict(dict)
         self.name_schemas = defaultdict(dict)
+        self.function_return_schemas = {}
         self.model_schemas = {}
         self.schema_hints_by_expr = {}
 
@@ -114,6 +115,16 @@ class LocalContextTracker:
                     "__element__": self.generic_schema_leaf(),
                 }
 
+        if isinstance(node, ast.Call):
+            function_name = None
+            if isinstance(node.func, ast.Name):
+                function_name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                function_name = node.func.attr
+
+            if function_name and function_name in self.function_return_schemas:
+                return self.function_return_schemas[function_name]
+
         sqlalchemy_query_schema = self.schema_from_sqlalchemy_query_expr(node)
         if sqlalchemy_query_schema:
             return sqlalchemy_query_schema
@@ -164,6 +175,16 @@ class LocalContextTracker:
                 **fields,
             }
 
+    def track_function_definition(self, node: ast.FunctionDef | ast.AsyncFunctionDef):
+        for stmt in ast.walk(node):
+            if not isinstance(stmt, ast.Return):
+                continue
+
+            schema = self.schema_hint_for_node(stmt.value, node.name) if stmt.value else None
+            if schema:
+                self.function_return_schemas[node.name] = schema
+                return
+
     def track_call(self, node: ast.Call, current_function: str | None):
         self._track_list_append(node, current_function)
         self._track_dict_update(node, current_function)
@@ -183,6 +204,18 @@ class LocalContextTracker:
         if current_function and node.id in self.dict_assignments[current_function]:
             context_data.update(self.dict_assignments[current_function][node.id])
             return True
+        if current_function and node.id in self.name_schemas[current_function]:
+            schema = self.name_schemas[current_function][node.id]
+            if isinstance(schema, dict):
+                for key, value in schema.items():
+                    if not str(key).startswith("__"):
+                        context_data[key] = {
+                            "code": key,
+                            "line": getattr(node, "lineno", None),
+                            "column": getattr(node, "col_offset", None),
+                            "schema_hint": value,
+                        }
+                return True
         return False
 
     def _get_constant_subscript_key(self, target: ast.AST):
