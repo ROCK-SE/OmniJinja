@@ -29,6 +29,21 @@ class LocalContextTracker:
             if not str(key).startswith("__")
         }
 
+    def template_rendered_kwargs_schema(self) -> dict:
+        return {
+            "template": {
+                "__type__": "Template",
+                "__is_iterable__": False,
+                "name": {"__type__": "String", "__is_iterable__": True},
+                "filename": {"__type__": "String", "__is_iterable__": True},
+            },
+            "context": {
+                "__type__": "Dictionary",
+                "__is_iterable__": True,
+                "__element__": self.generic_schema_leaf(),
+            },
+        }
+
     def schema_from_dict_node(self, node: ast.Dict) -> dict:
         return self.schema_from_tracked_dict({
             k.value: self.prepare_for_jedi(v)
@@ -111,6 +126,7 @@ class LocalContextTracker:
     def track_assignment(self, target: ast.AST, value: ast.AST, current_function: str | None):
         self._track_dict_literal_assignment(target, value, current_function)
         self._track_list_literal_assignment(target, value, current_function)
+        self._track_attribute_list_assignment(target, value)
         self._track_dict_item_assignment(target, value, current_function)
         self._track_attribute_schema_assignment(target, value, current_function)
         self._track_name_schema_assignment(target, value, current_function)
@@ -192,6 +208,19 @@ class LocalContextTracker:
             return
 
         self.list_schemas[current_function][target.id] = self.list_schema_from_element_schema(
+            self.schema_from_list_elements(value.elts)
+        )
+
+    def _track_attribute_list_assignment(self, target: ast.AST, value: ast.AST):
+        if not isinstance(target, ast.Attribute) or not isinstance(value, ast.List):
+            return
+
+        try:
+            target_expr = ast.unparse(target)
+        except Exception:
+            return
+
+        self.schema_hints_by_expr[target_expr] = self.list_schema_from_element_schema(
             self.schema_from_list_elements(value.elts)
         )
 
@@ -325,15 +354,31 @@ class LocalContextTracker:
             return
         if not isinstance(node.func, ast.Attribute) or node.func.attr != "append":
             return
-        if not isinstance(node.func.value, ast.Name) or not node.args:
+        if not node.args:
             return
 
-        list_name = node.func.value.id
-        list_schema = self.list_schemas[current_function].setdefault(list_name, {
-            "__type__": "List",
-            "__is_iterable__": True,
-            "__element__": {},
-        })
+        list_schema = None
+        if isinstance(node.func.value, ast.Name):
+            list_schema = self.list_schemas[current_function].setdefault(node.func.value.id, {
+                "__type__": "List",
+                "__is_iterable__": True,
+                "__element__": {},
+            })
+        elif isinstance(node.func.value, ast.Attribute):
+            try:
+                list_expr = ast.unparse(node.func.value)
+            except Exception:
+                list_expr = None
+
+            if list_expr:
+                list_schema = self.schema_hints_by_expr.setdefault(list_expr, {
+                    "__type__": "List",
+                    "__is_iterable__": True,
+                    "__element__": {},
+                })
+
+        if not list_schema:
+            return
 
         appended = node.args[0]
         if isinstance(appended, ast.Dict):
@@ -347,6 +392,11 @@ class LocalContextTracker:
                 self.merge_schema_children(
                     list_schema["__element__"],
                     self.schema_from_tracked_dict(dict_items),
+                )
+            elif appended.id == "kwargs":
+                self.merge_schema_children(
+                    list_schema["__element__"],
+                    self.template_rendered_kwargs_schema(),
                 )
 
     def _track_dict_update(self, node: ast.Call, current_function: str | None):

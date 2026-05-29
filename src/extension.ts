@@ -296,6 +296,39 @@ function getSchemaChild(schemaNode: any, key: string) {
     return undefined;
 }
 
+const INDEX_ACCESS_TOKEN = '__omnijinja_index__';
+const JINJA_ACCESS_EXPR_PATTERN = String.raw`[a-zA-Z_]\w*(?:\[[^\]]+\])*(?:\.[a-zA-Z_]\w*(?:\[[^\]]+\])*)*`;
+
+function parseJinjaAccessPath(expression: string) {
+    const parts: string[] = [];
+    const segmentPattern = /([a-zA-Z_]\w*)((?:\[[^\]]+\])*)/g;
+    const bracketPattern = /\[([^\]]+)\]/g;
+    let match: RegExpExecArray | null;
+    let expectedIndex = 0;
+
+    while ((match = segmentPattern.exec(expression)) !== null) {
+        if (match.index !== expectedIndex) {
+            return undefined;
+        }
+
+        parts.push(match[1]);
+
+        let bracketMatch: RegExpExecArray | null;
+        while ((bracketMatch = bracketPattern.exec(match[2])) !== null) {
+            const indexExpr = bracketMatch[1].trim();
+            const quotedKey = indexExpr.match(/^['"]([^'"]+)['"]$/);
+            parts.push(quotedKey ? quotedKey[1] : INDEX_ACCESS_TOKEN);
+        }
+
+        expectedIndex = segmentPattern.lastIndex;
+        if (expression[expectedIndex] === '.') {
+            expectedIndex++;
+        }
+    }
+
+    return expectedIndex === expression.length && parts.length > 0 ? parts : undefined;
+}
+
 function isRequirementSatisfied(requirementNode: any, schemaNode: any): boolean {
     if (schemaNode === undefined || schemaNode === null) {
         return false;
@@ -381,6 +414,15 @@ function resolveSchemaPath(context: any, pathParts: string[]) {
 
     let current = context[pathParts[0]];
     for (const part of pathParts.slice(1)) {
+        if (part === INDEX_ACCESS_TOKEN) {
+            const elementSchema = getCompletionChildren(current);
+            if (!elementSchema || elementSchema === current) {
+                return undefined;
+            }
+            current = elementSchema;
+            continue;
+        }
+
         if (isGenericSchemaLeaf(current)) {
             return current;
         }
@@ -962,19 +1004,11 @@ export async function activate(context: vscode.ExtensionContext) {
                     const mergedContext = buildStrictContext(document, position);
 
                     // Handle Nested Property Access (e.g., user.profile.)
-                    const propMatch = jinjaText.match(/([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\.([a-zA-Z0-9_]*)$/);
+                    const propMatch = jinjaText.match(new RegExp(`(${JINJA_ACCESS_EXPR_PATTERN})\\.([a-zA-Z0-9_]*)$`));
                     if (propMatch) {
                         const basePath = propMatch[1];
-                        const parts = basePath.split('.');
-                        let currentLevel = mergedContext;
-
-                        for (const part of parts) {
-                            if (currentLevel && typeof currentLevel === 'object' && part in currentLevel) {
-                                currentLevel = currentLevel[part];
-                            } else {
-                                currentLevel = undefined; break;
-                            }
-                        }
+                        const parts = parseJinjaAccessPath(basePath);
+                        let currentLevel = parts ? resolveSchemaPath(mergedContext, parts) : undefined;
 
                         const completionLevel = getCompletionChildren(currentLevel);
                         if (completionLevel && typeof completionLevel === 'object') {
@@ -1105,20 +1139,11 @@ export async function activate(context: vscode.ExtensionContext) {
                 let foundValue: any = undefined;
 
                 // Attempt precise path matching first (e.g., user.profile)
-                const pathMatch = textUpToHover.match(/([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)$/);
+                const pathMatch = textUpToHover.match(new RegExp(`(${JINJA_ACCESS_EXPR_PATTERN})$`));
                 if (pathMatch) {
                     const fullPath = pathMatch[1];
-                    const parts = fullPath.split('.');
-                    let currentLevel = mergedContext;
-                    let validPath = true;
-                    for (const part of parts) {
-                        if (currentLevel && typeof currentLevel === 'object' && part in currentLevel) {
-                            currentLevel = currentLevel[part];
-                        } else {
-                            validPath = false; break;
-                        }
-                    }
-                    if (validPath) foundValue = currentLevel;
+                    const parts = parseJinjaAccessPath(fullPath);
+                    if (parts) foundValue = resolveSchemaPath(mergedContext, parts);
                 }
 
                 // Fallback to deep recursive search if exact path fails
@@ -1189,23 +1214,16 @@ export async function activate(context: vscode.ExtensionContext) {
                 }
 
                 // Process Methods and Macros
-                const methodMatch = linePrefix.match(/([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\s*\([^)]*$/);
+                const methodMatch = linePrefix.match(new RegExp(`(${JINJA_ACCESS_EXPR_PATTERN})\\s*\\([^)]*$`));
                 if (methodMatch) {
                     const fullPath = methodMatch[1];
-                    const parts = fullPath.split('.');
+                    const parts = parseJinjaAccessPath(fullPath);
 
                     const mergedContext = buildStrictContext(document, position);
 
-                    let currentLevel = mergedContext;
-                    for (const part of parts) {
-                        if (currentLevel && typeof currentLevel === 'object' && part in currentLevel) {
-                            currentLevel = currentLevel[part];
-                        } else {
-                            currentLevel = undefined; break;
-                        }
-                    }
+                    let currentLevel = parts ? resolveSchemaPath(mergedContext, parts) : undefined;
 
-                    const isCallable = currentLevel && (currentLevel.__type__ === 'Function' || currentLevel.__type__ === 'Macro');
+                    const isCallable = parts && currentLevel && (currentLevel.__type__ === 'Function' || currentLevel.__type__ === 'Macro');
                     if (isCallable) {
                         const sigHelp = new vscode.SignatureHelp();
                         const sigInfo = new vscode.SignatureInformation(
@@ -1256,22 +1274,14 @@ export async function activate(context: vscode.ExtensionContext) {
                         let found = false;
                         let targetLine = 0;
 
-                        const pathMatch = document.lineAt(position.line).text.substring(0, wordRange.end.character).match(/([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)$/);
+                        const pathMatch = document.lineAt(position.line).text.substring(0, wordRange.end.character).match(new RegExp(`(${JINJA_ACCESS_EXPR_PATTERN})$`));
                         if (pathMatch) {
                             const fullPath = pathMatch[1];
-                            const parts = fullPath.split('.');
-                            let currentLevel = contextData;
-                            let validPath = true;
-                            for (const part of parts) {
-                                if (currentLevel && typeof currentLevel === 'object' && part in currentLevel) {
-                                    currentLevel = currentLevel[part];
-                                } else {
-                                    validPath = false; break;
-                                }
-                            }
-                            if (validPath) {
+                            const parts = parseJinjaAccessPath(fullPath);
+                            const currentLevel = parts ? resolveSchemaPath(contextData, parts) : undefined;
+                            if (currentLevel) {
                                 found = true;
-                                if (currentLevel) targetLine = (currentLevel.def_line || 1) - 1;
+                                targetLine = (currentLevel.def_line || 1) - 1;
                             }
                         }
 
