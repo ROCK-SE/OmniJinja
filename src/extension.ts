@@ -279,7 +279,7 @@ function hasKnownSchemaChildren(schemaNode: any) {
 }
 
 function isGenericSchemaLeaf(schemaNode: any) {
-    return !!schemaNode && typeof schemaNode === 'object' && '__type__' in schemaNode && !hasKnownSchemaChildren(schemaNode);
+    return !!schemaNode && typeof schemaNode === 'object' && '__type__' in schemaNode && !schemaNode.__element__ && !hasKnownSchemaChildren(schemaNode);
 }
 
 function getSchemaChild(schemaNode: any, key: string) {
@@ -348,6 +348,17 @@ function isRequirementSatisfied(requirementNode: any, schemaNode: any): boolean 
         const schemaType = schemaNode.__type__;
         const isIterable = schemaNode.__is_iterable__ || ['Iterable', 'List', 'Tuple', 'Dict', 'Any'].includes(schemaType);
         if (!isIterable) {
+            return false;
+        }
+    }
+
+    const requirementElement = requirementNode.__element__;
+    if (requirementElement && typeof requirementElement === 'object') {
+        const schemaElement = schemaNode.__element__;
+        if (schemaElement === undefined || schemaElement === null) {
+            return isGenericSchemaLeaf(schemaNode);
+        }
+        if (!isRequirementSatisfied(requirementElement, schemaElement)) {
             return false;
         }
     }
@@ -1722,6 +1733,20 @@ function checkDeep(pathStr: string, demandNode: any, supplyNode: any, templateNa
             diagnostics.push(new vscode.Diagnostic(
                 range,
                 `OmniJinja [DataFlow]: '${pathStr}' is iterated over in '${templateName}', but Python provides type '${sType}'.`,
+                vscode.DiagnosticSeverity.Warning
+            ));
+        }
+    }
+
+    if (demandNode.__element__ && typeof demandNode.__element__ === 'object') {
+        const supplyElement = supplyNode?.__element__;
+        if (supplyElement !== undefined && supplyElement !== null) {
+            checkDeep(pathStr, demandNode.__element__, supplyElement, templateName, lineNum, diagnostics);
+        } else if (!isGenericSchemaLeaf(supplyNode)) {
+            const range = new vscode.Range(lineNum, 0, lineNum, 50);
+            diagnostics.push(new vscode.Diagnostic(
+                range,
+                `OmniJinja [DataFlow]: Template '${templateName}' expects iterable '${pathStr}' to provide element properties, but Python does not expose an element schema.`,
                 vscode.DiagnosticSeverity.Warning
             ));
         }

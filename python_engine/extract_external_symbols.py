@@ -36,6 +36,11 @@ class JinjaExternalVariableExtractor(NodeVisitor):
                 return base_path
         return []
 
+    def _extract_callable_path(self, node) -> list:
+        if isinstance(node, nodes.Getattr) and node.attr in STANDARD_METHODS:
+            return []
+        return self._extract_path(node)
+
     def _record_path(self, path: list, is_callable: bool = False):
         if not path: return
         base_var = path[0]
@@ -80,7 +85,11 @@ class JinjaExternalVariableExtractor(NodeVisitor):
         
     def visit_Call(self, node: nodes.Call):
         if isinstance(node.node, (nodes.Getattr, nodes.Name)):
-            self._record_path(self._extract_path(node.node), is_callable=True)
+            callable_path = self._extract_callable_path(node.node)
+            if callable_path:
+                self._record_path(callable_path, is_callable=True)
+            elif isinstance(node.node, nodes.Getattr):
+                self._record_path(self._extract_path(node.node))
         for arg in node.args: self.visit(arg)
         for kwarg in node.kwargs: self.visit(kwarg.value)
 
