@@ -200,12 +200,28 @@ def check_delimiter_mismatch(template: str) -> List[SyntaxError]:
         i += 1
         col += 1
 
+    template_lines = template.split(chr(10))
     stack = []
     for delim_type, delim_subtype, line, col, delim_str in delimiters:
         if delim_type == 'open':
             stack.append((delim_subtype, line, col, delim_str))
         else:
             if not stack:
+                # When we see an orphan %}, check for a lone { on the same
+                # line that should have been {% (e.g. "{ endcomment %}")
+                if delim_str == '%}' and line <= len(template_lines):
+                    line_text = template_lines[line - 1]
+                    lone_brace_col = _find_lone_opening_brace(line_text, col)
+                    if lone_brace_col is not None:
+                        errors.append(SyntaxError(
+                            rule="Rule 2: Delimiter syntax error",
+                            line=line,
+                            col=lone_brace_col,
+                            description="Malformed opening delimiter: single { should be {%",
+                            original="{",
+                            suggestion="Change { to {%"
+                        ))
+                        continue
                 errors.append(SyntaxError(
                     rule="Rule 2: Delimiter syntax error",
                     line=line,
@@ -256,7 +272,8 @@ def check_tag_logic_pairing(lines: List[str]) -> List[SyntaxError]:
         'with': 'endwith',
         'autoescape': 'endautoescape',
         'filter': 'endfilter',
-        'raw': 'endraw'
+        'raw': 'endraw',
+        'comment': 'endcomment'
     }
     
     tag_pattern = r'\{%-?\s*(\w+)'
@@ -271,7 +288,12 @@ def check_tag_logic_pairing(lines: List[str]) -> List[SyntaxError]:
                 stack.append((tag_name, line_num, col, full_tag))
             elif tag_name.startswith('end'):
                 end_tag_name = tag_name[3:]
-                
+
+                # Only flag pairing errors for known block tags;
+                # custom / framework-specific end* tags are silently ignored
+                if end_tag_name not in start_tags:
+                    continue
+
                 if not stack:
                     errors.append(SyntaxError(
                         rule="Rule 2: Delimiter syntax error",
@@ -444,6 +466,28 @@ def _find_closing(text: str, start: int, open_delim: str, close_delim: str) -> i
 def _get_closing_delimiter(delim_type: str) -> str:
     mapping = {'tag': '%}', 'output': '}}', 'comment': '#}'}
     return mapping.get(delim_type, '?')
+
+
+def _find_lone_opening_brace(line: str, close_col: int) -> int:
+    """
+    Look for a lone { on the same line before close_col that is NOT
+    part of a valid {% , {{ , or {# opener.  Returns the 1-based column
+    of the { if one is found, or None otherwise.
+
+    This catches patterns like  { something %}  where the user forgot
+    the % after the opening brace.
+    """
+    # Only search the portion of the line before the closing %}
+    prefix = line[:close_col - 1]
+    # Walk backwards from the %} to find the nearest lone {
+    for j in range(len(prefix) - 1, -1, -1):
+        if prefix[j] == '{':
+            # Check the next character — if it's %, {, or # it's valid
+            if j + 1 < len(prefix) and prefix[j + 1] in ('%', '{', '#'):
+                continue  # valid opener, skip
+            # It's a lone { — return 1-based column
+            return j + 1
+    return None
 
 
 def _check_invalid_property_access(content: str, line_num: int, base_col: int) -> List[SyntaxError]:

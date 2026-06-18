@@ -120,7 +120,11 @@ def fix_template(original_template: str, errors: List[SyntaxError]) -> str:
         
         line = fixed_lines[line_idx]
         
-        for error in sorted(errors_by_line[line_num], key=lambda e: -e.col):
+        # Process "Malformed opening" fixes first so that lone-{ → {%
+        # repairs happen before we decide whether an end-tag is "extra".
+        for error in sorted(errors_by_line[line_num],
+                            key=lambda e: (0 if 'Malformed' in e.description else 1,
+                                           -e.col)):
             # Fix Rule 1: Nested delimiters
             if "Rule 1" in error.rule:
                 match = re.search(r'\{\{\s*([^}]+?)\s*\}\}', error.original)
@@ -142,12 +146,50 @@ def fix_template(original_template: str, errors: List[SyntaxError]) -> str:
             
             # Fix Rule 2: Delimiter syntax
             elif "Rule 2" in error.rule:
+                # Handle malformed opening delimiter: lone { should be {%
+                if "Malformed opening" in error.description:
+                    old_len = len(line)
+                    line = replace_at_column(line, error.col, error.original, '{%')
+                    # The line grew by 1 char ({ → {%); shift columns of
+                    # remaining errors on this line that are past the fix.
+                    shift = len(line) - old_len
+                    if shift:
+                        for later_err in errors_by_line[line_num]:
+                            if later_err.col > error.col:
+                                later_err.col += shift
+
                 # Handle extra closing tags/delimiters
-                if "extra closing" in error.description.lower() or "extra" in error.description.lower():
-                    if line.strip() == error.original:
-                        lines_to_delete.add(line_idx)
+                elif "extra closing" in error.description.lower():
+                    # If an earlier "Malformed opening" fix on this line
+                    # has created a matching opener, this closer is no
+                    # longer extra — skip removal.
+                    if error.original.startswith('{%'):
+                        tag_m = re.match(r'\{%-?\s*(\w+)', error.original)
+                        if tag_m:
+                            closer_name = tag_m.group(1)
+                            if closer_name.startswith('end'):
+                                opener_name = closer_name[3:]
+                                if re.search(r'\{%-?\s*\b' + opener_name + r'\b', line):
+                                    continue  # now properly paired
+
+                    col_idx = error.col - 1
+                    # For tags ({%...%}), remove the whole block including the closing %}
+                    if error.original.startswith('{%'):
+                        close_pos = line.find('%}', col_idx)
+                        if close_pos != -1:
+                            line = line[:col_idx] + line[close_pos + 2:]
+                        else:
+                            line = line.replace(error.original, '', 1)
+                    # For outputs ({{...}}), remove the whole block including closing }}
+                    elif error.original.startswith('{{'):
+                        close_pos = line.find('}}', col_idx)
+                        if close_pos != -1:
+                            line = line[:col_idx] + line[close_pos + 2:]
+                        else:
+                            line = line.replace(error.original, '', 1)
                     else:
-                        line = replace_at_column(line, error.col, error.original, "").rstrip()
+                        # Pure delimiter extra (like stray %}, }}, #})
+                        line = replace_at_column(line, error.col, error.original, '').rstrip()
                 
                 # Handle mismatched delimiters/tags
                 elif "mismatch" in error.description.lower():
@@ -155,7 +197,24 @@ def fix_template(original_template: str, errors: List[SyntaxError]) -> str:
                         match = re.search(r'Change .+ to (\S+)$', error.suggestion)
                         if match:
                             correct_str = match.group(1)
-                            line = replace_at_column(line, error.col, error.original, correct_str)
+                            col_idx = error.col - 1
+                            # For tag mismatches (e.g. {% endfor %} should be {% endif %})
+                            # replace the whole tag block, not just the incomplete prefix
+                            if error.original.startswith('{%'):
+                                close_pos = line.find('%}', col_idx)
+                                if close_pos != -1:
+                                    line = line[:col_idx] + '{% ' + correct_str + ' %}' + line[close_pos + 2:]
+                                else:
+                                    line = replace_at_column(line, error.col, error.original, '{% ' + correct_str + ' %}')
+                            elif error.original.startswith('{{'):
+                                close_pos = line.find('}}', col_idx)
+                                if close_pos != -1:
+                                    line = line[:col_idx] + '{{ ' + correct_str + ' }}' + line[close_pos + 2:]
+                                else:
+                                    line = replace_at_column(line, error.col, error.original, correct_str)
+                            else:
+                                # Pure delimiter mismatch (e.g. %} → }})
+                                line = replace_at_column(line, error.col, error.original, correct_str)
                 
                 # Handle unclosed tags/delimiters
                 elif "Unclosed" in error.description:
@@ -163,11 +222,13 @@ def fix_template(original_template: str, errors: List[SyntaxError]) -> str:
                     
                     # 1. Handle Unclosed Comments {#
                     if "{#" in error.original:
-                        # Check if it partially closes with #
-                        if stripped_line.endswith('#'):
-                            line = stripped_line + "}"
+                        if stripped_line.endswith('}'):
+                            # Replace trailing lone } with proper #} close
+                            line = stripped_line[:-1] + '#}'
+                        elif stripped_line.endswith('#'):
+                            line = stripped_line + '}'
                         else:
-                            line = stripped_line + " #}"
+                            line = stripped_line + ' #}'
                     
                     # 2. Handle Unclosed Variables {{
                     elif "{{" in error.original:
@@ -179,45 +240,72 @@ def fix_template(original_template: str, errors: List[SyntaxError]) -> str:
                     
                     # 3. Handle Statements {%
                     elif "{%" in error.original:
-                        
+
+                        # Check whether the tag's own %} is present on this line
+                        # (search from the {% opening position onwards)
+                        tag_close_pos = stripped_line.find('%}', error.col - 1)
+
                         # CASE A: The tag delimiter itself is missing (e.g., "{% set x", "{% if x")
-                        if not stripped_line.endswith("%}"):
-                            # Check if it partially closes with %
-                            if stripped_line.endswith('%'):
-                                line = stripped_line + "}"
+                        if tag_close_pos == -1:
+                            if stripped_line.endswith('}'):
+                                # Replace trailing lone } with proper %} close
+                                line = stripped_line[:-1] + '%}'
+                            elif stripped_line.endswith('%'):
+                                line = stripped_line + '}'
                             else:
-                                line = stripped_line + " %}"
+                                line = stripped_line + ' %}'
                         
                         # CASE B: The tag is closed, but it's a block opener missing its closer
-                        # (We enter this else only if line already ends with %}, meaning the Tag is valid but the Block Logic is not)
                         else:
                             original_line = fixed_lines[error.line - 1]
                             indent = len(original_line) - len(original_line.lstrip())
                             indent_str = original_line[:indent]
-                            
+
+                            # Extract the tag name from original (e.g. "{% if" → "if", "{%comment" → "comment")
+                            tag_match = re.match(r'\{%-?\s*(\w+)', error.original)
+                            tag_name = tag_match.group(1) if tag_match else None
+
+                            # Map opener tag names to their corresponding end-tag templates
+                            _END_TAG_MAP = {
+                                'if': '{% endif %}',
+                                'for': '{% endfor %}',
+                                'with': '{% endwith %}',
+                                'block': '{% endblock %}',
+                                'macro': '{% endmacro %}',
+                                'call': '{% endcall %}',
+                                'autoescape': '{% endautoescape %}',
+                                'filter': '{% endfilter %}',
+                                'comment': '{% endcomment %}',
+                                'raw': '{% endraw %}',
+                            }
+
                             end_tag = None
-                            if "{% if" in error.original:
-                                end_tag = f"{indent_str}{{% endif %}}"
-                            elif "{% for" in error.original:
-                                end_tag = f"{indent_str}{{% endfor %}}"
-                            elif "{% with" in error.original:
-                                end_tag = f"{indent_str}{{% endwith %}}"
-                            elif "{% block" in error.original:
-                                end_tag = f"{indent_str}{{% endblock %}}"
-                            elif "{% macro" in error.original:
-                                end_tag = f"{indent_str}{{% endmacro %}}"
-                            elif "{% call" in error.original:
-                                end_tag = f"{indent_str}{{% endcall %}}"
-                            elif "{% autoescape" in error.original:
-                                end_tag = f"{indent_str}{{% endautoescape %}}"
-                            elif "{% filter" in error.original:
-                                end_tag = f"{indent_str}{{% endfilter %}}"
-                            
+                            if tag_name and tag_name in _END_TAG_MAP:
+                                end_tag = f"{indent_str}{_END_TAG_MAP[tag_name]}"
+
                             if end_tag:
-                                insert_line = find_insert_position_for_end_tag(
-                                    fixed_lines, error.line - 1, indent
-                                )
-                                missing_end_tags_info.append((end_tag, insert_line, error.line))
+                                # Only add a closing tag when the template has
+                                # more openers than closers for this tag type
+                                # (handles nesting and lone-{ fixes correctly).
+                                tag_re = re.compile(r'\{%-?\s*(\w+)')
+                                opener_cnt = 0
+                                closer_cnt = 0
+                                for i, fl in enumerate(fixed_lines):
+                                    # Use the in-progress line for the row we are
+                                    # fixing (earlier error fixes on this row may
+                                    # have already added the closer).
+                                    l = line if i == line_idx else fl
+                                    for m in tag_re.finditer(l):
+                                        n = m.group(1)
+                                        if n == tag_name:
+                                            opener_cnt += 1
+                                        elif n == 'end' + tag_name:
+                                            closer_cnt += 1
+                                if opener_cnt > closer_cnt:
+                                    insert_line = find_insert_position_for_end_tag(
+                                        fixed_lines, error.line - 1, indent
+                                    )
+                                    missing_end_tags_info.append((end_tag, insert_line, error.line))
         
         fixed_lines[line_idx] = line
     
