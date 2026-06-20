@@ -64,11 +64,55 @@ class JinjaSymbolExtractor(NodeVisitor):
             return [item.name for item in target.items if isinstance(item, nodes.Name)]
         return []
 
-    def _loop_target_schema(self, iter_node, iter_type_data: dict, target_count: int, target_index: int) -> dict:
+    def _loop_target_schema(self, iter_node, iter_type_data: dict, base_schema: dict,
+                             iter_method: str, target_count: int, target_index: int) -> dict:
+        """
+        Determines the type schema for a loop variable based on the iterable expression.
+
+        Args:
+            iter_node: The Jinja2 AST node for the iterable expression.
+            iter_type_data: The resolved element type of the iterable.
+            base_schema: The schema of the base object (before unwrapping iteration).
+            iter_method: The method called on the iterable, if any ('items', 'keys', 'values', or None).
+            target_count: Number of loop target variables (1 for single, 2 for key/value).
+            target_index: Index of the current target variable (0 for key, 1 for value).
+        """
+        is_dict = base_schema.get('__type__') == 'Dictionary' if base_schema else False
+
+        # ── .items() on dict: (key, value) pairs ──────────────────────
+        if iter_method == 'items' and is_dict:
+            if target_count == 2:
+                if target_index == 0:
+                    return {"__type__": "String"}  # key
+                else:
+                    return iter_type_data if iter_type_data else {"__type__": "Any"}  # value
+            else:
+                # Single target with .items() → each item is a (key, value) tuple-like
+                return {
+                    "__type__": "Tuple",
+                    "0": {"__type__": "String"},
+                    "1": iter_type_data if iter_type_data else {"__type__": "Any"}
+                }
+
+        # ── .keys() on dict → keys are strings ───────────────────────
+        if iter_method == 'keys' and is_dict:
+            return {"__type__": "String"}
+
+        # ── .values() on dict → values are the dict's element type ───
+        if iter_method == 'values' and is_dict:
+            return iter_type_data if iter_type_data else {"__type__": "Any"}
+
+        # ── Direct dict iteration ({% for x in mydict %}) → yields keys
+        if is_dict and target_count == 1:
+            return {"__type__": "String"}
+
+        # ── Multi-target fallback (e.g., dictsort filter) ────────────
         if target_count > 1:
             if isinstance(iter_node, nodes.Filter) and iter_node.name == "dictsort" and target_index == 0:
                 return {"__type__": "String"}
             return {"__type__": "Any"}
+
+        # ── Single target: return element type ───────────────────────
         return iter_type_data if iter_type_data else {"__type__": "Any"}
 
     def _extract_macro_args(self, args) -> list:
@@ -141,11 +185,24 @@ class JinjaSymbolExtractor(NodeVisitor):
         iter_path = self._extract_path(node.iter)
         iter_type_data = self._resolve_schema(iter_path, is_iterable=True)
 
+        # Detect method call on iterable: .items(), .keys(), .values()
+        # e.g., stats.items() → Call(Getattr(Name('stats'), 'items'), [])
+        iter_method = None
+        if isinstance(node.iter, nodes.Call) and isinstance(node.iter.node, nodes.Getattr):
+            method_attr = node.iter.node.attr
+            if method_attr in ('items', 'keys', 'values'):
+                iter_method = method_attr
+
+        # Get base schema (before unwrapping for iteration) to detect dict types
+        base_schema = self._resolve_schema(iter_path, is_iterable=False)
+
         # Create a new local scope for the loop with the loop variable and 'loop' object
         local_scope = {"loop": self.LOOP_PROPERTIES}
         target_names = self._extract_target_names(node.target)
         for index, target_name in enumerate(target_names):
-            local_scope[target_name] = self._loop_target_schema(node.iter, iter_type_data, len(target_names), index)
+            local_scope[target_name] = self._loop_target_schema(
+                node.iter, iter_type_data, base_schema, iter_method, len(target_names), index
+            )
             
         # Calculate spatial scope range (start and end line)
         start_line = node.lineno
@@ -206,16 +263,26 @@ class JinjaSymbolExtractor(NodeVisitor):
                 for name in target_str.split(',')
                 if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name.strip())
             ]
+
+            # Detect dict method call on iterable: path ending with .items / .keys / .values
+            # (Jinja2 allows calling methods with or without parentheses)
+            method_name = None
+            for m in ('items', 'keys', 'values'):
+                if path_str.endswith('.' + m):
+                    method_name = m
+                    path_str = path_str[:-(len(m) + 1)]
+                    break
+
+            base_schema = self._resolve_schema(path_str.split('.'), is_iterable=False)
             iter_data = self._resolve_schema(path_str.split('.'), is_iterable=True)
-            
+
             start_line = template_code[:match.start()].count('\n') + 1
-            
+
             scoped_vars = {"loop": self.LOOP_PROPERTIES}
             for index, target_name in enumerate(target_names):
-                if len(target_names) > 1:
-                    scoped_vars[target_name] = {"__type__": "String"} if filter_name == "dictsort" and index == 0 else {"__type__": "Any"}
-                else:
-                    scoped_vars[target_name] = iter_data if iter_data else {"__type__": "Any"}
+                scoped_vars[target_name] = self._loop_target_schema(
+                    None, iter_data, base_schema, method_name, len(target_names), index
+                )
             
             text_after_for = template_code[match.end():]
             endfor_match = re.search(r'\{%-?\s*endfor\s*-?%\}', text_after_for)

@@ -223,6 +223,171 @@ export const BUILTIN_TESTS: Record<string, any> = {
 };
 
 /**
+ * Built-in Type Methods
+ * Provides method completions for common Python types (dict, list, str)
+ * that are passed as context variables into Jinja2 templates.
+ * Each method includes signature, args for snippet generation, and docstring for hover info.
+ */
+export const BUILTIN_TYPE_METHODS: Record<string, Record<string, any>> = {
+    "Dictionary": {
+        "items": {
+            __type__: "Function",
+            signature: "items()",
+            docstring: "Return an iterator over the dictionary's (key, value) pairs.",
+            args: []
+        },
+        "keys": {
+            __type__: "Function",
+            signature: "keys()",
+            docstring: "Return an iterator over the dictionary's keys.",
+            args: []
+        },
+        "values": {
+            __type__: "Function",
+            signature: "values()",
+            docstring: "Return an iterator over the dictionary's values.",
+            args: []
+        },
+        "get": {
+            __type__: "Function",
+            signature: "get(key, default=None)",
+            docstring: "Return the value for key if key is in the dictionary, else default.",
+            args: ["key", "default"]
+        },
+        "update": {
+            __type__: "Function",
+            signature: "update(other)",
+            docstring: "Update the dictionary with the key/value pairs from other.",
+            args: ["other"]
+        },
+        "pop": {
+            __type__: "Function",
+            signature: "pop(key, default=None)",
+            docstring: "Remove and return the value for key if key is in the dictionary, else default.",
+            args: ["key", "default"]
+        }
+    },
+    "List": {
+        "append": {
+            __type__: "Function",
+            signature: "append(item)",
+            docstring: "Add an item to the end of the list.",
+            args: ["item"]
+        },
+        "pop": {
+            __type__: "Function",
+            signature: "pop(index=-1)",
+            docstring: "Remove and return the item at the given index.",
+            args: ["index"]
+        },
+        "index": {
+            __type__: "Function",
+            signature: "index(value, start=0, stop=None)",
+            docstring: "Return the first index of value in the list.",
+            args: ["value", "start", "stop"]
+        },
+        "count": {
+            __type__: "Function",
+            signature: "count(value)",
+            docstring: "Return the number of occurrences of value in the list.",
+            args: ["value"]
+        },
+        "sort": {
+            __type__: "Function",
+            signature: "sort(key=None, reverse=False)",
+            docstring: "Sort the list in place.",
+            args: ["key", "reverse"]
+        },
+        "reverse": {
+            __type__: "Function",
+            signature: "reverse()",
+            docstring: "Reverse the list in place.",
+            args: []
+        },
+        "extend": {
+            __type__: "Function",
+            signature: "extend(iterable)",
+            docstring: "Extend the list by appending elements from the iterable.",
+            args: ["iterable"]
+        }
+    },
+    "String": {
+        "upper": {
+            __type__: "Function",
+            signature: "upper()",
+            docstring: "Return a copy of the string converted to uppercase.",
+            args: []
+        },
+        "lower": {
+            __type__: "Function",
+            signature: "lower()",
+            docstring: "Return a copy of the string converted to lowercase.",
+            args: []
+        },
+        "capitalize": {
+            __type__: "Function",
+            signature: "capitalize()",
+            docstring: "Return a copy of the string with its first character capitalized.",
+            args: []
+        },
+        "title": {
+            __type__: "Function",
+            signature: "title()",
+            docstring: "Return a titlecased version of the string.",
+            args: []
+        },
+        "strip": {
+            __type__: "Function",
+            signature: "strip(chars=None)",
+            docstring: "Return a copy of the string with leading and trailing whitespace removed.",
+            args: ["chars"]
+        },
+        "split": {
+            __type__: "Function",
+            signature: "split(sep=None, maxsplit=-1)",
+            docstring: "Return a list of the words in the string using sep as the delimiter.",
+            args: ["sep", "maxsplit"]
+        },
+        "join": {
+            __type__: "Function",
+            signature: "join(iterable)",
+            docstring: "Concatenate any number of strings using this string as separator.",
+            args: ["iterable"]
+        },
+        "replace": {
+            __type__: "Function",
+            signature: "replace(old, new, count=-1)",
+            docstring: "Return a copy with all occurrences of substring old replaced by new.",
+            args: ["old", "new", "count"]
+        },
+        "startswith": {
+            __type__: "Function",
+            signature: "startswith(prefix, start=0, end=None)",
+            docstring: "Return True if the string starts with the specified prefix.",
+            args: ["prefix", "start", "end"]
+        },
+        "endswith": {
+            __type__: "Function",
+            signature: "endswith(suffix, start=0, end=None)",
+            docstring: "Return True if the string ends with the specified suffix.",
+            args: ["suffix", "start", "end"]
+        },
+        "find": {
+            __type__: "Function",
+            signature: "find(sub, start=0, end=None)",
+            docstring: "Return the lowest index where substring sub is found.",
+            args: ["sub", "start", "end"]
+        },
+        "format": {
+            __type__: "Function",
+            signature: "format(*args, **kwargs)",
+            docstring: "Perform string formatting.",
+            args: ["...args"]
+        }
+    }
+};
+
+/**
  * Built-in Globals
  */
 export const BUILTIN_GLOBALS: Record<string, any> = {

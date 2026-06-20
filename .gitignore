@@ -208,3 +208,7 @@ __marimo__/
 
 # Node modules
 node_modules/
+
+# VS Code Extension build output
+out/
+.vscode-test/

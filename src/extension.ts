@@ -13,7 +13,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 // Import built-in Jinja2 definitions (tags, filters, tests, globals)
-import { BUILTIN_FILTERS, BUILTIN_TAGS, BUILTIN_TESTS, BUILTIN_GLOBALS } from './jinja_builtins';
+import { BUILTIN_FILTERS, BUILTIN_TAGS, BUILTIN_TESTS, BUILTIN_GLOBALS, BUILTIN_TYPE_METHODS } from './jinja_builtins';
 
 // ==========================================
 // Memory Registries (State Management)
@@ -70,6 +70,11 @@ const templateDependenciesRegistry = new Map<string, any>();
  */
 const templateBlocksRegistry = new Map<string, string[]>();
 
+/** * Tracks all template file paths in the workspace for extends/include path completion.
+ * Contains normalized relative paths for all discovered template files.
+ */
+const workspaceTemplatePaths = new Set<string>();
+
 // Background task queues and debounce timers for performance optimization
 const debounceTimers = new Map<string, NodeJS.Timeout>();
 const parseQueue: string[] = [];
@@ -90,6 +95,13 @@ function getTemplateKey(absolutePath: string): string {
     const normalized = absolutePath.replace(/\\/g, '/');
     const match = normalized.match(/\/templates\/(.+)$/);
     return match ? match[1] : path.basename(absolutePath);
+}
+
+function addToWorkspaceTemplatePaths(absolutePath: string, workspaceRoot: string) {
+    // Use getTemplateKey which strips the templates/ prefix (Flask convention)
+    // e.g., "templates/base.html" -> "base.html", "templates/sub/index.html" -> "sub/index.html"
+    const templateKey = getTemplateKey(absolutePath);
+    workspaceTemplatePaths.add(templateKey);
 }
 
 function getSafePyName(absolutePath: string, workspaceRoot: string): string {
@@ -265,8 +277,89 @@ function getEffectiveBackendContext(templateName: string) {
 }
 
 function getOverridableBlocksForTemplate(templateName: string) {
-    const templateKey = findTemplateKey(templateBlocksRegistry, templateName);
-    return templateBlocksRegistry.get(templateKey) || [];
+    const blocks: string[] = [];
+    const visited = new Set<string>();
+
+    function collectBlocks(currentTemplate: string) {
+        const currentTemplateKey = findTemplateKey(templateBlocksRegistry, currentTemplate);
+        const ownBlocks = templateBlocksRegistry.get(currentTemplateKey);
+        if (ownBlocks && ownBlocks.length > 0) {
+            for (const block of ownBlocks) {
+                if (!blocks.includes(block)) {
+                    blocks.push(block);
+                }
+            }
+        }
+
+        // Traverse the extends chain to collect blocks from parent templates
+        const depsKey = findTemplateKey(templateDependenciesRegistry, currentTemplate);
+        const deps = templateDependenciesRegistry.get(depsKey);
+        const parentTemplate = deps?.extends;
+        if (parentTemplate && !visited.has(parentTemplate)) {
+            visited.add(parentTemplate);
+            collectBlocks(parentTemplate);
+        }
+    }
+
+    collectBlocks(templateName);
+    return blocks;
+}
+
+/**
+ * Finds all templates that depend on the given template (via extends, include, or import).
+ * Used to trigger re-parsing of dependent templates when a dependency changes.
+ */
+function getDependentTemplates(targetTemplateName: string): string[] {
+    const dependents: string[] = [];
+    const targetKey = findTemplateKey(templateDependenciesRegistry, targetTemplateName);
+    // Normalize the target name for comparison
+    const targetBase = path.basename(targetTemplateName.replace(/\\/g, '/'));
+
+    for (const [templateKey, deps] of templateDependenciesRegistry.entries()) {
+        if (!deps) continue;
+        let isDependent = false;
+
+        // Check extends
+        if (deps.extends) {
+            const extendsKey = findTemplateKey(templateDependenciesRegistry, deps.extends);
+            if (extendsKey === targetKey ||
+                extendsKey === targetTemplateName ||
+                path.basename(deps.extends) === targetBase) {
+                isDependent = true;
+            }
+        }
+
+        // Check includes
+        if (!isDependent && deps.includes && Array.isArray(deps.includes)) {
+            for (const inc of deps.includes) {
+                if (inc === targetTemplateName ||
+                    inc === targetKey ||
+                    path.basename(inc) === targetBase) {
+                    isDependent = true;
+                    break;
+                }
+            }
+        }
+
+        // Check imports
+        if (!isDependent && deps.imports && Array.isArray(deps.imports)) {
+            for (const imp of deps.imports) {
+                const impTemplate = imp.template;
+                if (impTemplate === targetTemplateName ||
+                    impTemplate === targetKey ||
+                    path.basename(impTemplate) === targetBase) {
+                    isDependent = true;
+                    break;
+                }
+            }
+        }
+
+        if (isDependent) {
+            dependents.push(templateKey);
+        }
+    }
+
+    return dependents;
 }
 
 function hasKnownSchemaChildren(schemaNode: any) {
@@ -611,6 +704,7 @@ export async function activate(context: vscode.ExtensionContext) {
             const templateFiles = await vscode.workspace.findFiles(pattern, excludePattern);
             for (const file of templateFiles) {
                 allTemplateFiles.push(file);
+                addToWorkspaceTemplatePaths(file.fsPath, workspaceRoot);
                 loadJinjaSchemaIntoMemory(file.fsPath, workspaceRoot, storagePath);
             }
         }
@@ -653,6 +747,23 @@ export async function activate(context: vscode.ExtensionContext) {
                     jinjaParseQueue.push(filePath);
                     processJinjaQueue(pythonEnginePath, workspaceRoot, storagePath);
                 }
+
+                // Also re-parse templates that depend on this file
+                // (e.g., if base.html adds new blocks, re-parse index.html which extends it)
+                const templateKey = getTemplateKey(filePath);
+                const dependents = getDependentTemplates(templateKey);
+                for (const depKey of dependents) {
+                    vscode.workspace.findFiles(`**/${depKey}`, '**/{node_modules,.venv,venv}/**', 1).then(uris => {
+                        if (uris.length > 0) {
+                            const depPath = uris[0].fsPath;
+                            if (!jinjaParseQueue.includes(depPath)) {
+                                jinjaParseQueue.push(depPath);
+                                processJinjaQueue(pythonEnginePath, workspaceRoot, storagePath);
+                            }
+                        }
+                    });
+                }
+
                 debounceTimers.delete(filePath);
             }, 300));
         }
@@ -683,6 +794,14 @@ export async function activate(context: vscode.ExtensionContext) {
         const templateKey = getTemplateKey(deletedHtmlPath);
         const safeName = getSafeJinjaName(deletedHtmlPath, workspaceRoot);
 
+        // Clean up template path registry
+        const normalized = deletedHtmlPath.replace(/\\/g, '/');
+        const wsRoot = workspaceRoot.replace(/\\/g, '/');
+        if (normalized.startsWith(wsRoot + '/')) {
+            workspaceTemplatePaths.delete(normalized.substring(wsRoot.length + 1));
+        }
+        workspaceTemplatePaths.delete(templateKey);
+
         diagnosticCollection.delete(uri);
         internalJinjaRegistry.delete(templateKey);
         templateDependenciesRegistry.delete(templateKey);
@@ -692,6 +811,38 @@ export async function activate(context: vscode.ExtensionContext) {
 
         const jsonPath = path.join(storagePath, 'jinja_schemas', safeName);
         if (fs.existsSync(jsonPath)) fs.unlinkSync(jsonPath);
+    });
+
+    // File Creation Handler: process new template files immediately
+    htmlWatcher.onDidCreate((uri) => {
+        const newHtmlPath = uri.fsPath;
+        const templateKey = getTemplateKey(newHtmlPath);
+
+        // Register the new template path for extends/include completion
+        addToWorkspaceTemplatePaths(newHtmlPath, workspaceRoot);
+
+        // Queue the new file for parsing
+        if (!jinjaParseQueue.includes(newHtmlPath)) {
+            jinjaParseQueue.push(newHtmlPath);
+            processJinjaQueue(pythonEnginePath, workspaceRoot, storagePath);
+        }
+
+        // Re-parse any templates that might extend/include/import this new file
+        // (they were parsed before this file existed, so they may have missed blocks/variables)
+        const dependents = getDependentTemplates(templateKey);
+        for (const depKey of dependents) {
+            // Find the actual file path for the dependent template
+            // Try to match against known template files
+            vscode.workspace.findFiles(`**/${depKey}`, '**/{node_modules,.venv,venv}/**', 1).then(uris => {
+                if (uris.length > 0) {
+                    const depPath = uris[0].fsPath;
+                    if (!jinjaParseQueue.includes(depPath)) {
+                        jinjaParseQueue.push(depPath);
+                        processJinjaQueue(pythonEnginePath, workspaceRoot, storagePath);
+                    }
+                }
+            });
+        }
     });
 
     // ==========================================
@@ -860,20 +1011,81 @@ export async function activate(context: vscode.ExtensionContext) {
                     .map(name => name.trim())
                     .filter(name => /^[a-zA-Z_]\w*$/.test(name));
                 const iterExpression = forMatch[2].trim();
-                const iterPathMatch = iterExpression.match(/^([a-zA-Z_][\w.]*)/);
-                if (!iterPathMatch) {
-                    continue;
-                }
 
-                const iterPath = iterPathMatch[1].split('.');
-                const iterSchema = resolveSchemaPath(context, iterPath);
-                const elementSchema = getCompletionChildren(iterSchema) || { __type__: 'Any' };
+                // ── Dict method detection ──────────────────────────────────
+                // Detect .items() / .keys() / .values() calls on dict objects
+                // e.g., stats.items() → method='items', basePath='stats'
+                const dictMethodMatch = iterExpression.match(
+                    /^([a-zA-Z_][\w.]*)\.(items|keys|values)\s*\(\s*\)\s*$/
+                );
 
-                for (const [index, name] of targetNames.entries()) {
-                    if (targetNames.length > 1) {
-                        context[name] = /\|\s*dictsort\b/.test(iterExpression) && index === 0 ? { __type__: 'String' } : anySchema;
+                if (dictMethodMatch) {
+                    const basePath = dictMethodMatch[1];
+                    const method = dictMethodMatch[2];
+                    const basePathParts = basePath.split('.');
+                    const baseSchema = resolveSchemaPath(context, basePathParts);
+                    const isDict = baseSchema?.__type__ === 'Dictionary';
+                    // Use __element__ for dict value type when available
+                    const dictValueSchema = getCompletionChildren(baseSchema) || { __type__: 'Any' };
+
+                    if (method === 'items') {
+                        // {% for key, value in dict.items() %}
+                        // key → String, value → element type of dict
+                        for (const [index, name] of targetNames.entries()) {
+                            if (targetNames.length === 2) {
+                                context[name] = index === 0
+                                    ? { __type__: 'String' }
+                                    : dictValueSchema;
+                            } else {
+                                // Single target with .items() → each item is a (key, value) tuple-like object
+                                context[name] = {
+                                    __type__: 'Tuple',
+                                    0: { __type__: 'String' },
+                                    1: dictValueSchema
+                                };
+                            }
+                        }
+                    } else if (method === 'keys') {
+                        // {% for key in dict.keys() %} → key is String
+                        for (const name of targetNames) {
+                            context[name] = { __type__: 'String' };
+                        }
+                    } else if (method === 'values') {
+                        // {% for value in dict.values() %} → value is the dict element type
+                        for (const name of targetNames) {
+                            context[name] = dictValueSchema;
+                        }
                     } else {
-                        context[name] = elementSchema;
+                        // Fallback (shouldn't reach here)
+                        for (const name of targetNames) {
+                            context[name] = anySchema;
+                        }
+                    }
+                } else {
+                    // ── Original path resolution ──────────────────────────
+                    const iterPathMatch = iterExpression.match(/^([a-zA-Z_][\w.]*)/);
+                    if (!iterPathMatch) {
+                        continue;
+                    }
+
+                    const iterPath = iterPathMatch[1].split('.');
+                    const iterSchema = resolveSchemaPath(context, iterPath);
+                    let elementSchema = getCompletionChildren(iterSchema) || { __type__: 'Any' };
+
+                    // When iterating a dict directly ({% for x in mydict %}), iteration yields keys
+                    if (iterSchema?.__type__ === 'Dictionary' && targetNames.length === 1) {
+                        elementSchema = { __type__: 'String' };
+                    }
+
+                    for (const [index, name] of targetNames.entries()) {
+                        if (targetNames.length > 1) {
+                            // Multi-target without explicit .items() — could be dictsort filter
+                            context[name] = /\|\s*dictsort\b/.test(iterExpression) && index === 0
+                                ? { __type__: 'String' }
+                                : anySchema;
+                        } else {
+                            context[name] = elementSchema;
+                        }
                     }
                 }
                 context.loop = {
@@ -1022,27 +1234,53 @@ export async function activate(context: vscode.ExtensionContext) {
                         let currentLevel = parts ? resolveSchemaPath(mergedContext, parts) : undefined;
 
                         const completionLevel = getCompletionChildren(currentLevel);
+
+                        // Track added keys to avoid duplicates between schema props and built-in methods
+                        const addedKeys = new Set<string>();
+
+                        // Helper to create a completion item with consistent styling
+                        function addPropCompletion(key: string, val: any) {
+                            if (addedKeys.has(key)) return;
+                            // Filter out internal metadata keys
+                            if (['__type__', 'def_line', 'args', 'signature', '__is_iterable__', '__element__'].includes(key)) return;
+                            addedKeys.add(key);
+
+                            const isCallable = (val as any)?.__type__ === 'Function' || (val as any)?.__type__ === 'Macro';
+                            const kind = isCallable ? vscode.CompletionItemKind.Method : vscode.CompletionItemKind.Property;
+                            const item = new vscode.CompletionItem(key, kind);
+                            item.detail = `OmniJinja: ${getDisplayType(val)}`;
+
+                            // Attach docstring/documentation if available
+                            if (val?.docstring) {
+                                item.documentation = new vscode.MarkdownString(val.docstring);
+                            }
+
+                            // Auto-inject parenthesis for callable properties
+                            if (isCallable) {
+                                const methodVal = val as any;
+                                if (methodVal.args && Array.isArray(methodVal.args)) {
+                                    if (methodVal.args.length > 0) {
+                                        const snippetArgs = methodVal.args.map((arg: string, index: number) => `\${${index + 1}:${arg}}`).join(', ');
+                                        item.insertText = new vscode.SnippetString(`${key}(${snippetArgs})`);
+                                    } else item.insertText = new vscode.SnippetString(`${key}()$0`);
+                                }
+                            } else item.insertText = key;
+                            completionItems.push(item);
+                        }
+
+                        // 1. Add properties from schema children (e.g., object attributes)
                         if (completionLevel && typeof completionLevel === 'object') {
                             for (const [key, val] of Object.entries(completionLevel)) {
-                                // Filter out internal metadata keys
-                                if (['__type__', 'def_line', 'args', 'signature', '__is_iterable__', '__element__'].includes(key)) continue;
+                                addPropCompletion(key, val);
+                            }
+                        }
 
-                                const isCallable = (val as any)?.__type__ === 'Function' || (val as any)?.__type__ === 'Macro';
-                                const kind = isCallable ? vscode.CompletionItemKind.Method : vscode.CompletionItemKind.Property;
-                                const item = new vscode.CompletionItem(key, kind);
-                                item.detail = `OmniJinja: ${getDisplayType(val)}`;
-
-                                // Auto-inject parenthesis for callable properties
-                                if (isCallable) {
-                                    const methodVal = val as any;
-                                    if (methodVal.args && Array.isArray(methodVal.args)) {
-                                        if (methodVal.args.length > 0) {
-                                            const snippetArgs = methodVal.args.map((arg: string, index: number) => `\${${index + 1}:${arg}}`).join(', ');
-                                            item.insertText = new vscode.SnippetString(`${key}(${snippetArgs})`);
-                                        } else item.insertText = new vscode.SnippetString(`${key}()$0`);
-                                    }
-                                } else item.insertText = key;
-                                completionItems.push(item);
+                        // 2. Inject built-in type methods based on __type__
+                        //    (e.g., .items() / .keys() / .values() for Dictionary, .append() for List)
+                        const typeName = currentLevel?.__type__;
+                        if (typeName && BUILTIN_TYPE_METHODS[typeName]) {
+                            for (const [methodName, methodInfo] of Object.entries(BUILTIN_TYPE_METHODS[typeName])) {
+                                addPropCompletion(methodName, methodInfo);
                             }
                         }
 
@@ -1100,8 +1338,22 @@ export async function activate(context: vscode.ExtensionContext) {
                     const completionItems: vscode.CompletionItem[] = [];
                     const uniquePaths = new Set<string>();
 
+                    // Normalize: strip "templates/" prefix and backslashes
+                    // so both "templates/base.html" and "base.html" become just "base.html"
+                    const normalizeTemplatePath = (p: string) => {
+                        let normalized = p.replace(/\\/g, '/');
+                        normalized = normalized.replace(/^templates\//, '');
+                        return normalized;
+                    };
+
+                    // Collect from Python-referenced templates
                     for (const paths of templateFilesRegistry.values()) {
-                        for (const p of paths) uniquePaths.add(p);
+                        for (const p of paths) uniquePaths.add(normalizeTemplatePath(p));
+                    }
+
+                    // Also collect from all workspace template files
+                    for (const p of workspaceTemplatePaths) {
+                        uniquePaths.add(normalizeTemplatePath(p));
                     }
 
                     for (const templatePath of uniquePaths) {
@@ -1525,6 +1777,9 @@ function loadJinjaSchemaIntoMemory(htmlFilePath: string, workspaceRoot: string, 
     const templateKey = getTemplateKey(htmlFilePath);
     const safeName = getSafeJinjaName(htmlFilePath, workspaceRoot);
     const jsonPath = path.join(storagePath, 'jinja_schemas', safeName);
+
+    // Always register this template path for extends/include path completion
+    addToWorkspaceTemplatePaths(htmlFilePath, workspaceRoot);
 
     const uri = vscode.Uri.file(htmlFilePath);
     diagnosticCollection.delete(uri);
