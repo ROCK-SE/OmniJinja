@@ -118,7 +118,22 @@ OmniJinja intelligently builds an inheritance and dependency tree across your Ji
 Together, these features provide both language-level Jinja support and cross-file Python--Jinja consistency checking inside VS Code.
 
 
+## Installation
 
+OmniJinja is available as a VSCode extension.
+
+You can install it in one of the following ways:
+
+1. Open VSCode.
+2. Go to the Extensions view.
+3. Search forOmniJinja.
+4. Click Install.
+
+Alternatively, you can install it from the VSCode Marketplace:
+
+OmniJinja on VSCode Marketplace
+
+After installation, open a Python/Jinja project in VSCode.OmniJinja will activate automatically when you open supported files such as.py,.html,.jinja,.jinja2, or.j2.
 
 ## Requirements
 
