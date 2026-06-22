@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+    {{ site_name }}
+{% endblock %}
+{{ user }}
+{{ stats }}
+{{ show_profile }}
+
+{{ user.profile.bio }}
+
+{{ user.name | role_label }}
+
+{% for key,value in stats.items() %}
+    {{ key }}:{{ value }}
+{% endfor %}
+
+{% set page_tilte = "Home" %}
+{{ page_tilte }}
+
+<!-- cross-language inconsistencies -->
+<h1{{ user.full_name }}</h1>
+
+<p>{{ config.site_name }}</p>
+
+{% for item in show_profile %}
+  {{ item }}
+{% endfor %}
+
+<p>{{ user.is_admin|format_role }}</p>
