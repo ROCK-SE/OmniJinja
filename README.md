@@ -183,6 +183,8 @@ When reporting an issue, please include:
   
 ### License
 
+This project is licensed under the Mulan Permissive Software License,Version2(Mulan PSL v2).
+See the [LICENSE](./LICENSE) file for details.
 
 ### Acknowledgments
 
