@@ -35,20 +35,20 @@ OmniJinja can use this render context to provide template-side editor features.
 Supported features include:
 
 * Placeholder completion for variables passed from Python, such as `user` and `show_stats`;
-  ![placeholder completion](https://github.com/ROCK-SE/OmniJinja/blob/main/image/placeholder.png)
+  ![placeholder completion](https://raw.githubusercontent.com/ROCK-SE/OmniJinja/blob/main/image/placeholder.png)
 * Property completion for inferred object fields, such as `user.name` or `user.profile.avatar`;
-  ![property completion](https://github.com/ROCK-SE/OmniJinja/blob/main/image/property.png)
+  ![property completion](https://raw.githubusercontent.com/ROCK-SE/OmniJinja/blob/main/image/property.png)
 * Custom filter completion for filters registered in Python;
-  ![custom filter completion](https://github.com/ROCK-SE/OmniJinja/blob/main/image/custom_filter.png)
+  ![custom filter completion](https://raw.githubusercontent.com/ROCK-SE/OmniJinja/blob/main/image/custom_filter.png)
 * Template path completion for `{% extends %}` and `{% include %}`;
-  ![template path completion](https://github.com/ROCK-SE/OmniJinja/blob/main/image/template_path.png)
+  ![template path completion](https://raw.githubusercontent.com/ROCK-SE/OmniJinja/blob/main/image/template_path.png)
 * Hover information for Python-backed variables, properties, methods, and filters;
-  ![hover](https://github.com/ROCK-SE/OmniJinja/blob/main/image/hover.png)
-  ![hover_data](https://github.com/ROCK-SE/OmniJinja/blob/main/image/hover_data.png)
+  ![hover](https://raw.githubusercontent.com/ROCK-SE/OmniJinja/blob/main/image/hover.png)
+  ![hover_data](https://raw.githubusercontent.com/ROCK-SE/OmniJinja/blob/main/image/hover_data.png)
 * Signature help for callable objects, methods, macros, and filters;
 * Go to Definition from Jinja template usage to the corresponding Python definition when available;
 * Backend-informed template diagnostics for issues such as undefined variable, missing attributes, incompatible loop targets, and unregistered filters.
-  ![template_check](https://github.com/ROCK-SE/OmniJinja/blob/main/image/template_check.png)
+  ![template_check](https://raw.githubusercontent.com/ROCK-SE/OmniJinja/blob/main/image/template_check.png)
 
 This means OmniJinja completion is not only based on Jinja syntax. It is driven by information extracted from the Python render context.
 
@@ -72,7 +72,7 @@ Supported checks include:
 
 This helps developers detect Python--Jinja data mismatches before running the application.
 
-![python check](https://github.com/ROCK-SE/OmniJinja/blob/main/image/python_check.png)
+![python check](https://raw.githubusercontent.com/ROCK-SE/OmniJinja/blob/main/image/python_check.png)
 
 ### 3. Template-local Jinja Support
 
@@ -89,7 +89,7 @@ Supported features include:
 * Jinja syntax diagnostics for specific syntax errors;
 * Quick fixes for specific Jinja syntax errors;
 * Local ignore actions for suppressing specific warnings during the current editing session.
-![qucik fix](https://github.com/ROCK-SE/OmniJinja/blob/main/image/quick_fix.png)
+![qucik fix](https://raw.githubusercontent.com/ROCK-SE/OmniJinja/blob/main/image/quick_fix.png)
 
 #### Supported Jinja Syntax Diagnostics and Fixes
 
@@ -109,7 +109,7 @@ Rule 5 is reported as a warning because Jinja code inside HTML comments may stil
 OmniJinja intelligently builds an inheritance and dependency tree across your Jinja files. It fully resolves multi-file scopes, providing seamless completions and validation across boundaries.
 
 * Inheritance (extends): When a child template extends a base template, OmniJinja automatically resolves and suggests global variables (e.g., `{% set %}`), macros, and overridable block names defined in the parent. When writing `{% block ... %}` in the child template, inherited parent blocks are suggested for quick override.
-![extends](https://github.com/ROCK-SE/OmniJinja/blob/main/image/extends.png)
+![extends](https://raw.githubusercontent.com/ROCK-SE/OmniJinja/blob/main/image/extends.png)
 
 * Partials (include): When a template includes a component, OmniJinja ensures that variables provided by the Python backend to the parent view are correctly recognized inside the included "orphan" component.
 
