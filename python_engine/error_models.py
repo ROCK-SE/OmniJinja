@@ -1,7 +1,5 @@
 # models.py
 from dataclasses import dataclass
-from enum import Enum
-
 
 @dataclass
 class SyntaxError:
@@ -27,11 +25,9 @@ class SyntaxError:
     suggestion: str
 
 
-class State(Enum):
-    """
-    Parser state enumeration (used by detection module).
-    
-    This enum tracks the current parsing context when scanning through
+class State:
+    """    
+    This class tracks the current parsing context when scanning through
     a template to determine what type of delimiter block we're inside.
     
     Values:
@@ -44,3 +40,4 @@ class State(Enum):
     IN_TAG = "in_tag"          # Inside {% %}
     IN_OUTPUT = "in_output"    # Inside {{ }}
     IN_COMMENT = "in_comment"  # Inside {# #}
+
