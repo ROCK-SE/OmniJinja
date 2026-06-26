@@ -1,0 +1,19 @@
+cff-version:1.2.0
+title:"OmniJinja"
+version:"1.0.0"
+type:software
+message:"If you use this software,please cite it as below."
+abstract:"OmniJinja is a Visual Studio Code extension for Python/Jinja template development.It provides Python-side context-aware completion,hover,definition navigation,and template diagnostics for Jinja templates."
+license:"MulanPSL-2.0"
+repository-code:"https://github.com/ROCK-SE/OmniJinja"
+url:"https://marketplace.visualstudio.com/items?itemName=rock-se.omnijinja"
+keywords:
+  - Jinja
+  - VS Code extension
+  - template engine
+  - Python static analysis
+  - code completion
+authors:
+  - family-names:"Sun"
+    given-names:"Yu"
+    affiliation:"University of Science and Technology Beijing/ROCK-SE"
